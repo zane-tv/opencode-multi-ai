@@ -1,0 +1,46 @@
+{
+  "name": "opencode-multi-ai",
+  "version": "0.1.0",
+  "description": "OpenCode multi-account plugin unifying SuperGrok (xai-multi) and ChatGPT/Codex (codex-multi) with tabbed TUI.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "main": "index.ts",
+  "bin": {
+    "op-ai": "./scripts/cli.ts",
+    "op-xai": "./scripts/cli.ts",
+    "op-codex": "./scripts/cli.ts",
+    "opencode-multi-ai": "./scripts/cli.ts",
+    "opencode-multi-xai": "./scripts/cli.ts",
+    "opencode-multi-codex": "./scripts/cli.ts",
+    "xai-multi": "./scripts/cli.ts",
+    "codex-multi": "./scripts/cli.ts"
+  },
+  "exports": {
+    ".": "./index.ts",
+    "./lib/plugin/xai": "./lib/plugin/xai.ts",
+    "./lib/plugin/codex": "./lib/plugin/codex.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "install-provider": "bun scripts/install.ts",
+    "cli": "bun scripts/cli.ts",
+    "install-cli": "bash scripts/install-cli.sh",
+    "install:global": "bash scripts/install-cli.sh --path",
+    "setup": "bash install.sh --path"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "^1.0.0",
+    "@opencode-ai/sdk": "^1.0.0",
+    "@opentui/core": "0.4.3",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  }
+}

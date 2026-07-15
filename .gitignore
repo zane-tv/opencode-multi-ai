@@ -1,0 +1,18 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Local agent / index state
+.slim/
+.omo/
+.codegraph
+.ignore
+
+# Local account pool / model cache / secrets (never commit)
+*-accounts.json
+multi-xai-models.json
+*.log
+.env
+.env.*

@@ -1,0 +1,166 @@
+import crypto from "node:crypto";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+
+import { AccountManager } from "../lib/core/accounts.js";
+import type {
+  AccountMetadata,
+  AccountStorage,
+  ProviderKind,
+} from "../lib/core/schemas.js";
+import { saveAccounts } from "../lib/core/storage.js";
+
+const PROVIDER_CASES = [
+  { provider: "xai", source: "opencode-mutil-xai" },
+  { provider: "codex", source: "opencode-multi-codex" },
+] as const;
+
+function tmpStorePath(provider: ProviderKind): string {
+  return path.join(
+    os.tmpdir(),
+    `multi-ai-${provider}-priority-${process.pid}-${crypto.randomBytes(6).toString("hex")}.json`,
+  );
+}
+
+function makeAccount(
+  provider: ProviderKind,
+  id: string,
+  priority: number,
+  addedAt: number,
+): AccountMetadata {
+  const common = {
+    accountId: id,
+    tags: [],
+    refreshToken: `rt-${id}`,
+    enabled: true,
+    priority,
+    addedAt,
+    lastUsed: 0,
+    lastSwitchReason: "initial" as const,
+    subscriptionStatus: "unknown" as const,
+    flaggedForRemoval: false,
+    entitlementBlocked: false,
+  };
+  return provider === "xai"
+    ? { provider: "xai", ...common }
+    : { provider: "codex", ...common };
+}
+
+function stickyFor(
+  provider: ProviderKind,
+  accountId: string,
+): AccountStorage["sticky"] {
+  return provider === "xai" ? { xai: accountId } : { codex: accountId };
+}
+
+async function cleanStore(storePath: string): Promise<void> {
+  const dir = path.dirname(storePath);
+  const base = path.basename(storePath);
+  const entries = await fs.readdir(dir).catch(() => [] as string[]);
+  await Promise.all(
+    entries
+      .filter((entry) => entry.startsWith(base))
+      .map((entry) =>
+        fs.rm(path.join(dir, entry), { force: true }).catch(() => undefined),
+      ),
+  );
+}
+
+describe.each(PROVIDER_CASES)(
+  "$source priority port ($provider namespace)",
+  ({ provider }) => {
+    let storePath: string;
+
+    beforeEach(() => {
+      storePath = tmpStorePath(provider);
+    });
+
+    afterEach(async () => {
+      await cleanStore(storePath);
+    });
+
+    it("sorts higher priority first and move up/down works", async () => {
+      const storage: AccountStorage = {
+        version: 2,
+        accounts: [
+          makeAccount(provider, "a", 0, 1),
+          makeAccount(provider, "b", 0, 2),
+          makeAccount(provider, "c", 5, 3),
+        ],
+        sticky: stickyFor(provider, "a"),
+      };
+      await saveAccounts(storage, storePath);
+
+      const manager = new AccountManager(storePath);
+      await manager.load();
+      expect(manager.list(provider).map((account) => account.accountId)).toEqual([
+        "c",
+        "a",
+        "b",
+      ]);
+
+      await manager.movePriority(provider, "a", "up");
+      const ids = manager.list(provider).map((account) => account.accountId);
+      expect(ids[0]).toBe("a");
+      expect(ids).toContain("c");
+
+      await manager.movePriority(provider, "a", "down");
+      expect(manager.list(provider)[1]?.accountId).toBe("a");
+
+      await manager.moveToFront(provider, "b");
+      expect(manager.list(provider)[0]?.accountId).toBe("b");
+    });
+
+    it("selectAccount prefers sticky then the first priority-sorted account", async () => {
+      const storage: AccountStorage = {
+        version: 2,
+        accounts: [
+          makeAccount(provider, "low", 0, 1),
+          makeAccount(provider, "high", 10, 2),
+        ],
+        sticky: stickyFor(provider, "low"),
+      };
+      await saveAccounts(storage, storePath);
+      const manager = new AccountManager(storePath);
+      await manager.load();
+
+      const sticky = manager.selectAccount(provider, new Set());
+      expect(sticky?.accountId).toBe("low");
+
+      await manager.setEnabled(provider, "low", false);
+      const next = manager.selectAccount(provider, new Set());
+      expect(next?.accountId).toBe("high");
+      expect(manager.sticky(provider)).toBe("high");
+    });
+
+    it("quota exhaustion demotes an account so rotation prefers others", async () => {
+      const storage: AccountStorage = {
+        version: 2,
+        accounts: [
+          makeAccount(provider, "a", 10, 1),
+          makeAccount(provider, "b", 5, 2),
+          makeAccount(provider, "c", 1, 3),
+        ],
+        sticky: stickyFor(provider, "a"),
+      };
+      await saveAccounts(storage, storePath);
+      const manager = new AccountManager(storePath);
+      await manager.load();
+
+      await manager.markQuotaExhausted(
+        provider,
+        "a",
+        Date.now() + 60_000,
+      );
+      expect(manager.list(provider).map((account) => account.accountId)).toEqual([
+        "b",
+        "c",
+        "a",
+      ]);
+      expect(manager.selectAccount(provider, new Set())?.accountId).toBe("b");
+    });
+  },
+);
