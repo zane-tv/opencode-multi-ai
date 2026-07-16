@@ -401,3 +401,22 @@ export function normalizeTags(raw: string): string[] {
   }
   return out;
 }
+
+/**
+ * Map a mouse localY to a list row index; -1 if outside rows/empty.
+ * linesPerItem ≤ 0 is treated as 1 (SelectRenderable always has ≥1 line/item).
+ */
+export function rowIndexFromMouse(
+  localY: number,
+  height: number,
+  linesPerItem: number,
+  scrollOffset: number,
+  count: number,
+): number {
+  if (localY < 0 || localY >= height) return -1;
+  const step = Math.max(1, linesPerItem);
+  const row = Math.floor(localY / step);
+  const index = scrollOffset + row;
+  if (index < 0 || index >= count) return -1;
+  return index;
+}

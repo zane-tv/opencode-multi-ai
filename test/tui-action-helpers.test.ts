@@ -6,6 +6,7 @@ import {
   clearConfirmation,
   decodeTuiAction,
   normalizeTags,
+  rowIndexFromMouse,
   type ConfirmationState,
   type TuiKeyEvent,
 } from "../lib/tui/action-helpers.js";
@@ -281,5 +282,41 @@ describe("TUI_BINDINGS registry", () => {
       expect(b.key.length).toBeGreaterThan(0);
       expect(b.labelKey.length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe("rowIndexFromMouse", () => {
+  it("returns -1 when localY is outside the viewport height", () => {
+    expect(rowIndexFromMouse(-1, 10, 2, 0, 5)).toBe(-1);
+    expect(rowIndexFromMouse(10, 10, 2, 0, 5)).toBe(-1);
+    expect(rowIndexFromMouse(11, 10, 2, 0, 5)).toBe(-1);
+  });
+
+  it("maps the first row (localY=0) to index 0 when not scrolled", () => {
+    expect(rowIndexFromMouse(0, 10, 2, 0, 5)).toBe(0);
+    expect(rowIndexFromMouse(1, 10, 2, 0, 5)).toBe(0);
+  });
+
+  it("uses linesPerItem=2 so the second visual item starts at localY=2", () => {
+    expect(rowIndexFromMouse(2, 10, 2, 0, 5)).toBe(1);
+    expect(rowIndexFromMouse(3, 10, 2, 0, 5)).toBe(1);
+    expect(rowIndexFromMouse(4, 10, 2, 0, 5)).toBe(2);
+  });
+
+  it("applies scrollOffset to the computed row", () => {
+    expect(rowIndexFromMouse(0, 10, 2, 3, 8)).toBe(3);
+    expect(rowIndexFromMouse(2, 10, 2, 3, 8)).toBe(4);
+  });
+
+  it("returns -1 when index would be >= count or list is empty", () => {
+    expect(rowIndexFromMouse(0, 10, 2, 0, 0)).toBe(-1);
+    expect(rowIndexFromMouse(8, 10, 2, 0, 3)).toBe(-1);
+    expect(rowIndexFromMouse(0, 10, 2, 5, 5)).toBe(-1);
+  });
+
+  it("guards linesPerItem=0 (and negative) to 1", () => {
+    expect(rowIndexFromMouse(0, 10, 0, 0, 5)).toBe(0);
+    expect(rowIndexFromMouse(1, 10, 0, 0, 5)).toBe(1);
+    expect(rowIndexFromMouse(2, 10, -3, 0, 5)).toBe(2);
   });
 });
