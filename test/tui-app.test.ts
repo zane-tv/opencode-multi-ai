@@ -1006,6 +1006,189 @@ const hasOpenTuiFfi = typeof (globalThis as { Bun?: unknown }).Bun !== "undefine
     await Promise.race([done, new Promise((r) => setTimeout(r, 1500))]);
     harness = null;
   });
+
+  it("action pane renders localized action labels EN and VI after g", async () => {
+    harness = await launchTui({ storePath, settingsPath });
+    const s = harness.setup();
+    const actionNode = s.renderer.root.findDescendantById(
+      "actions",
+    ) as SelectRenderable;
+    expect(actionNode).toBeInstanceOf(SelectRenderable);
+    const enNames = actionNode.options.map((o) => String(o.name));
+    expect(enNames.some((n) => /disable|Disable/i.test(n))).toBe(true);
+    expect(enNames.some((n) => n.includes("d "))).toBe(true);
+    const frameEn = frameOf(s);
+    expect(frameEn.toLowerCase()).toMatch(/actions|disable|switch/);
+
+    s.mockInput.pressKey("g");
+    await s.renderOnce();
+    await s.flush().catch(() => undefined);
+    expect(getLocale()).toBe("vi");
+    const viNames = actionNode.options.map((o) => String(o.name));
+    expect(viNames.length).toBe(TUI_BINDINGS.filter((b) => b.available).length);
+    const frameVi = frameOf(s);
+    expect(frameVi.toLowerCase()).toMatch(/thao tác|tắt|chuyển|thoát/);
+  });
+
+  it("Shift+Tab focuses actions; Enter on disable runs action on selected account", async () => {
+    harness = await launchTui({ storePath, settingsPath });
+    const { manager, setup } = harness;
+    const s = setup();
+    const actionNode = s.renderer.root.findDescendantById(
+      "actions",
+    ) as SelectRenderable;
+    const disableIdx = actionNode.options.findIndex(
+      (o) => o.value === "disable",
+    );
+    expect(disableIdx).toBeGreaterThanOrEqual(0);
+
+    s.mockInput.pressTab({ shift: true });
+    await s.renderOnce();
+    expect(frameOf(s)).toMatch(/work-xai|xai/i);
+    actionNode.focus();
+    actionNode.setSelectedIndex(disableIdx);
+    await s.renderOnce();
+    expect(actionNode.getSelectedOption()?.value).toBe("disable");
+    actionNode.selectCurrent();
+    await s.renderOnce();
+    await new Promise((r) => setTimeout(r, 200));
+    expect(manager.providerView("xai").get("xai-a")?.enabled).toBe(false);
+    expect(manager.providerView("codex").get("codex-a")?.enabled).toBe(true);
+
+    await manager.providerView("xai").setEnabled("xai-a", true);
+    await s.renderOnce();
+    actionNode.focus();
+    actionNode.setSelectedIndex(disableIdx);
+    await s.renderOnce();
+    s.mockInput.pressEnter();
+    await s.renderOnce();
+    await new Promise((r) => setTimeout(r, 200));
+    expect(manager.providerView("xai").get("xai-a")?.enabled).toBe(false);
+  });
+
+  it("actionSelect selectCurrent (ITEM_SELECTED) runs runAction", async () => {
+    harness = await launchTui({ storePath, settingsPath });
+    const { manager, setup } = harness;
+    const s = setup();
+    const actionNode = s.renderer.root.findDescendantById(
+      "actions",
+    ) as SelectRenderable;
+    const flagIdx = actionNode.options.findIndex((o) => o.value === "flag");
+    expect(flagIdx).toBeGreaterThanOrEqual(0);
+    actionNode.setSelectedIndex(flagIdx);
+    await s.renderOnce();
+    actionNode.selectCurrent();
+    await s.renderOnce();
+    await new Promise((r) => setTimeout(r, 150));
+    expect(manager.providerView("xai").get("xai-a")?.flaggedForRemoval).toBe(
+      true,
+    );
+  });
+
+  it("mouse: accountSelect onMouseDown selects row; actionSelect runs action; scroll moves; tab click switches", async () => {
+    harness = await launchTui({ storePath, settingsPath });
+    const { manager, setup } = harness;
+    const s = setup();
+    type SelectMouseDown = (event: {
+      x: number;
+      y: number;
+      stopPropagation?: () => void;
+      preventDefault?: () => void;
+    }) => void;
+    type SelectMouseScroll = (event: {
+      scroll?: { direction?: string; delta?: number };
+      stopPropagation?: () => void;
+    }) => void;
+    type SelectWithTuiMouse = SelectRenderable & {
+      tuiOnMouseDown?: SelectMouseDown;
+      tuiOnMouseScroll?: SelectMouseScroll;
+    };
+    type TextWithTuiMouse = { tuiOnMouseDown?: () => void };
+
+    const acc = s.renderer.root.findDescendantById(
+      "accounts",
+    ) as SelectWithTuiMouse;
+    const act = s.renderer.root.findDescendantById(
+      "actions",
+    ) as SelectWithTuiMouse;
+    const tabs = s.renderer.root.findDescendantById(
+      "tabs",
+    ) as TextWithTuiMouse;
+
+    expect(typeof acc.tuiOnMouseDown).toBe("function");
+    expect(typeof act.tuiOnMouseDown).toBe("function");
+    expect(typeof act.tuiOnMouseScroll).toBe("function");
+    expect(typeof tabs.tuiOnMouseDown).toBe("function");
+
+    const accPriv = acc as unknown as {
+      linesPerItem?: number;
+      scrollOffset?: number;
+    };
+    const accLines = Math.max(1, accPriv.linesPerItem ?? 2);
+    const accScroll = accPriv.scrollOffset ?? 0;
+    const targetAcc = 1;
+    const accLocalY = (targetAcc - accScroll) * accLines;
+    acc.tuiOnMouseDown!({
+      x: acc.x + 1,
+      y: acc.y + Math.max(0, accLocalY),
+      stopPropagation: () => undefined,
+      preventDefault: () => undefined,
+    });
+    await s.renderOnce();
+    expect(acc.getSelectedIndex()).toBe(1);
+
+    const disableIdx = act.options.findIndex((o) => o.value === "disable");
+    expect(disableIdx).toBeGreaterThanOrEqual(0);
+    act.setSelectedIndex(disableIdx);
+    await s.renderOnce();
+    const actPriv = act as unknown as {
+      linesPerItem?: number;
+      scrollOffset?: number;
+    };
+    const actLines = Math.max(1, actPriv.linesPerItem ?? 2);
+    const actScroll = actPriv.scrollOffset ?? 0;
+    const actLocalY = (disableIdx - actScroll) * actLines;
+    act.tuiOnMouseDown!({
+      x: act.x + 1,
+      y: act.y + Math.max(0, actLocalY),
+      stopPropagation: () => undefined,
+      preventDefault: () => undefined,
+    });
+    await s.renderOnce();
+    await new Promise((r) => setTimeout(r, 150));
+    expect(manager.providerView("xai").get("xai-b")?.enabled).toBe(false);
+
+    const beforeScroll = act.getSelectedIndex();
+    act.tuiOnMouseScroll!({
+      scroll: { direction: "down", delta: 1 },
+      stopPropagation: () => undefined,
+    });
+    await s.renderOnce();
+    expect(act.getSelectedIndex()).not.toBe(beforeScroll);
+
+    tabs.tuiOnMouseDown!();
+    await s.renderOnce();
+    const frame = frameOf(s);
+    expect(frame).toMatch(/Codex|codex|work-codex/i);
+  });
+
+  it("Shift+Tab toggles focus; plain Tab still switches provider", async () => {
+    harness = await launchTui({ storePath, settingsPath });
+    const s = harness.setup();
+    const frame0 = frameOf(s);
+    expect(frame0).toMatch(/work-xai|xai/i);
+
+    s.mockInput.pressTab({ shift: true });
+    await s.renderOnce();
+    s.mockInput.pressTab({ shift: true });
+    await s.renderOnce();
+    expect(frameOf(s)).toMatch(/work-xai|xai/i);
+
+    s.mockInput.pressTab();
+    await s.renderOnce();
+    await s.flush().catch(() => undefined);
+    expect(frameOf(s)).toMatch(/work-codex|Codex|codex/i);
+  });
 });
 
 if (!hasOpenTuiFfi) {

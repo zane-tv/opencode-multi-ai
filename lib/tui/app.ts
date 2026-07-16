@@ -85,6 +85,7 @@ import {
   clearConfirmation,
   decodeTuiAction,
   normalizeTags,
+  rowIndexFromMouse,
   type ConfirmationState,
   type TuiAction,
   type TuiKeyEvent,
@@ -560,6 +561,14 @@ function accountOptions(
   });
 }
 
+function buildActionOptions(): SelectOption[] {
+  return TUI_BINDINGS.filter((b) => b.available).map((b) => ({
+    name: `${b.key}  ${tr(b.labelKey)}`,
+    description: tr(b.descKey),
+    value: b.action,
+  }));
+}
+
 function labelValue(
   label: string,
   value: string,
@@ -862,6 +871,7 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
   let editMode = false;
   let editContext: EditContext | null = null;
   let addAbort: AbortController | null = null;
+  let focusPane: "accounts" | "actions" | "edit" = "accounts";
 
   function teardown(): void {
     if (!alive) return;
@@ -947,7 +957,8 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
   const accountSelect = new SelectRenderable(renderer, {
     id: "accounts",
     width: "100%",
-    flexGrow: 1,
+    height: 12,
+    flexGrow: 2,
     options: [],
     backgroundColor: parseColor(T.surface),
     textColor: parseColor(T.text),
@@ -957,6 +968,33 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
     selectedTextColor: parseColor(hue0.selectedText),
     descriptionColor: parseColor(T.textMuted),
     selectedDescriptionColor: parseColor(T.textMuted),
+    showScrollIndicator: true,
+    wrapSelection: true,
+    showDescription: true,
+    showSelectionIndicator: true,
+  });
+
+  const actionsLabel = new TextRenderable(renderer, {
+    id: "actions-label",
+    content: t`${fg(hue0.bright)(tr("actions_title"))}`,
+    height: 1,
+    width: "100%",
+  });
+
+  const actionSelect = new SelectRenderable(renderer, {
+    id: "actions",
+    width: "100%",
+    height: 10,
+    flexGrow: 1,
+    options: buildActionOptions(),
+    backgroundColor: parseColor(T.surface),
+    textColor: parseColor(T.text),
+    focusedBackgroundColor: parseColor(T.surface),
+    focusedTextColor: parseColor(T.text),
+    selectedBackgroundColor: parseColor(hue0.selectedBg),
+    selectedTextColor: parseColor(hue0.selectedText),
+    descriptionColor: parseColor(T.textMuted),
+    selectedDescriptionColor: parseColor(T.textDim),
     showScrollIndicator: true,
     wrapSelection: true,
     showDescription: true,
@@ -1057,6 +1095,42 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
     right.title = `${TAB_LABELS[tab]}${tr("detail_title")}`;
     accountSelect.selectedBackgroundColor = parseColor(hue.selectedBg);
     accountSelect.selectedTextColor = parseColor(hue.selectedText);
+    actionSelect.selectedBackgroundColor = parseColor(hue.selectedBg);
+    actionSelect.selectedTextColor = parseColor(hue.selectedText);
+    actionsLabel.content = t`${fg(hue.bright)(tr("actions_title"))}`;
+  }
+
+  function paintFocus(): void {
+    if (!alive) return;
+    const hue = providerHue(activeTab);
+    if (focusPane === "accounts") {
+      left.borderColor = parseColor(hue.border);
+      actionsLabel.content = t`${fg(hue.dim)(tr("actions_title"))}`;
+    } else if (focusPane === "actions") {
+      left.borderColor = parseColor(hue.bright);
+      actionsLabel.content = t`${fg(hue.bright)(tr("actions_title"))}`;
+    } else {
+      left.borderColor = parseColor(T.warn);
+      actionsLabel.content = t`${fg(hue.dim)(tr("actions_title"))}`;
+    }
+  }
+
+  function focusAccountsPane(): void {
+    focusPane = "accounts";
+    accountSelect.focus();
+    paintFocus();
+  }
+
+  function focusActionsPane(): void {
+    focusPane = "actions";
+    actionSelect.focus();
+    paintFocus();
+  }
+
+  function toggleFocusPane(): void {
+    if (editMode) return;
+    if (focusPane === "actions") focusAccountsPane();
+    else focusActionsPane();
   }
 
   function paintDetail(): void {
@@ -1105,7 +1179,12 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
         accountSelect.setSelectedIndex(selected);
       }
 
+      actionSelect.options = buildActionOptions();
+      actionSelect.selectedBackgroundColor = parseColor(hue.selectedBg);
+      actionSelect.selectedTextColor = parseColor(hue.selectedText);
+
       paintDetail();
+      paintFocus();
     } catch {
       void 0;
     } finally {
@@ -1135,13 +1214,14 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
     editInput.visible = false;
     editInput.value = "";
     editInput.blur();
-    accountSelect.focus();
+    focusAccountsPane();
   }
 
   function beginEdit(field: EditField): void {
     const acc = selectedAccount();
     if (!acc) return;
     editMode = true;
+    focusPane = "edit";
     editContext = {
       provider: activeTab,
       accountId: acc.accountId,
@@ -1169,7 +1249,7 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
     editInput.visible = true;
     editInput.value = "";
     editInput.focus();
-    // Drop the triggering key (l/t/n) if Input also consumed it.
+    paintFocus();
     queueMicrotask(() => {
       if (editMode && editInput.visible) editInput.value = "";
     });
@@ -1215,8 +1295,9 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
 
   accountSelect.on(
     SelectRenderableEvents.SELECTION_CHANGED,
-    (_opt: SelectOption | null, idx: number) => {
+    (idx: number, _opt: SelectOption | null) => {
       if (refreshing) return;
+      if (typeof idx !== "number" || !Number.isFinite(idx)) return;
       const prevId = selectedId();
       selection = setSelectedForTab(
         selection,
@@ -1234,6 +1315,136 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
       paintDetail();
     },
   );
+
+  function runSelectedActionOption(opt: SelectOption | null | undefined): void {
+    if (busy || editMode || !opt) return;
+    const value = opt.value;
+    if (typeof value !== "string") return;
+    void runAction(value as TuiAction);
+  }
+
+  actionSelect.on(
+    SelectRenderableEvents.ITEM_SELECTED,
+    (idxOrOpt: number | SelectOption, optOrIdx?: SelectOption | number) => {
+      const opt =
+        typeof idxOrOpt === "object" && idxOrOpt !== null
+          ? idxOrOpt
+          : typeof optOrIdx === "object" && optOrIdx !== null
+            ? optOrIdx
+            : null;
+      runSelectedActionOption(opt);
+    },
+  );
+
+  type SelectMouseDown = (event: {
+    type?: string;
+    x: number;
+    y: number;
+    stopPropagation?: () => void;
+    preventDefault?: () => void;
+  }) => void;
+  type SelectMouseScroll = (event: {
+    scroll?: { direction?: string; delta?: number };
+    stopPropagation?: () => void;
+  }) => void;
+  type SelectWithTuiMouse = SelectRenderable & {
+    tuiOnMouseDown?: SelectMouseDown;
+    tuiOnMouseScroll?: SelectMouseScroll;
+  };
+  type TextWithTuiMouse = TextRenderable & {
+    tuiOnMouseDown?: () => void;
+  };
+
+  function wireSelectMouse(
+    select: SelectRenderable,
+    kind: "accounts" | "actions",
+  ): void {
+    select.focusable = true;
+    const onDown: SelectMouseDown = (event) => {
+      if (busy || editMode) return;
+      event.stopPropagation?.();
+      event.preventDefault?.();
+
+      if (kind === "accounts") {
+        focusPane = "accounts";
+        select.focus();
+        paintFocus();
+      } else {
+        focusPane = "actions";
+        select.focus();
+        paintFocus();
+      }
+
+      const priv = select as unknown as {
+        linesPerItem?: number;
+        scrollOffset?: number;
+      };
+      const linesPerItem = priv.linesPerItem ?? 2;
+      const scrollOffset = priv.scrollOffset ?? 0;
+      const localY = event.y - select.y;
+      const count = select.options?.length ?? 0;
+      const index = rowIndexFromMouse(
+        localY,
+        select.height,
+        linesPerItem,
+        scrollOffset,
+        count,
+      );
+      if (index < 0) return;
+
+      if (kind === "accounts") {
+        const opt = select.options[index];
+        if (opt && opt.value === -1) return;
+        if (select.getSelectedIndex() !== index) {
+          select.setSelectedIndex(index);
+        } else {
+          selection = setSelectedForTab(
+            selection,
+            activeTab,
+            index,
+            view().list().length,
+          );
+          paintDetail();
+        }
+        return;
+      }
+
+      if (select.getSelectedIndex() !== index) {
+        select.setSelectedIndex(index);
+      }
+      const selected = select.getSelectedOption();
+      if (selected) {
+        runSelectedActionOption(selected);
+      } else {
+        select.selectCurrent();
+      }
+    };
+
+    const onScroll: SelectMouseScroll = (event) => {
+      if (busy || editMode) return;
+      event.stopPropagation?.();
+      const dir = event.scroll?.direction;
+      const delta = Math.max(1, Math.abs(event.scroll?.delta ?? 1));
+      if (dir === "up") select.moveUp(delta);
+      else if (dir === "down") select.moveDown(delta);
+    };
+
+    const tagged = select as SelectWithTuiMouse;
+    tagged.tuiOnMouseDown = onDown;
+    tagged.tuiOnMouseScroll = onScroll;
+    select.onMouseDown = onDown;
+    select.onMouseScroll = onScroll;
+  }
+
+  wireSelectMouse(accountSelect, "accounts");
+  wireSelectMouse(actionSelect, "actions");
+
+  const onTabMouseDown = () => {
+    if (busy || editMode) return;
+    switchTab(nextTab(activeTab));
+  };
+  (tabText as TextWithTuiMouse).tuiOnMouseDown = onTabMouseDown;
+  tabText.onMouseDown = onTabMouseDown;
 
   async function probeAndRecord(
     tab: TuiTab,
@@ -1367,6 +1578,10 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
         if (helpVisible) {
           helpVisible = false;
           paintDetail();
+          return;
+        }
+        if (focusPane === "actions") {
+          focusAccountsPane();
           return;
         }
         return;
@@ -1809,29 +2024,41 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
       type: (key as { type?: string }).type,
     };
 
-    // Ignore releases
     const et = (kev.eventType ?? kev.type ?? "").toLowerCase();
     if (et === "release" || et === "keyup") return;
 
-    // Edit mode: only Input handles typing; Esc cancels; Enter saves via Input event
     if (editMode) {
       const name = (kev.name ?? "").toLowerCase();
       if (name === "escape" || kev.sequence === "\x1b") {
         void runAction("escape");
       }
-      // Let InputRenderable consume letters (q/a/r/L are text, not shortcuts)
+      return;
+    }
+
+    // Shift+Tab toggles accounts↔actions focus; plain Tab stays tab-next.
+    const keyName = (kev.name ?? "").toLowerCase();
+    if (keyName === "tab" && kev.shift) {
+      toggleFocusPane();
+      return;
+    }
+
+    if (
+      focusPane === "actions" &&
+      (keyName === "return" || keyName === "enter")
+    ) {
+      const selected = actionSelect.getSelectedOption();
+      if (selected) runSelectedActionOption(selected);
+      else actionSelect.selectCurrent();
       return;
     }
 
     const action = decodeTuiAction(kev);
 
-    // Quit always
     if (action === "quit") {
       void runAction("quit");
       return;
     }
 
-    // Esc chain
     if (action === "escape") {
       void runAction("escape");
       return;
@@ -1863,6 +2090,8 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
   });
 
   left.add(accountSelect);
+  left.add(actionsLabel);
+  left.add(actionSelect);
   left.add(editInput);
   right.add(detailText);
 
@@ -1894,7 +2123,7 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
 
   renderer.root.add(root);
   refreshViews();
-  accountSelect.focus();
+  focusAccountsPane();
   startLive();
 
   await new Promise<void>((resolve) => {
