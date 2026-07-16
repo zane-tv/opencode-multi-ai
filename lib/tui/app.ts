@@ -928,14 +928,36 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
 
   const hue0 = providerHue(activeTab);
 
-  const left = new BoxRenderable(renderer, {
-    id: "left",
+  const leftCol = new BoxRenderable(renderer, {
+    id: "left-col",
     flexDirection: "column",
     width: "48%",
     height: "100%",
+    gap: 1,
+    backgroundColor: parseColor(T.bg),
+  });
+
+  const left = new BoxRenderable(renderer, {
+    id: "left",
+    flexDirection: "column",
+    flexGrow: 2,
+    width: "100%",
     border: true,
     borderColor: parseColor(hue0.border),
     title: `${tr("accounts_title").trim() || "Accounts"}`,
+    titleAlignment: "center",
+    backgroundColor: parseColor(T.surface),
+    padding: 1,
+  });
+
+  const actionsBox = new BoxRenderable(renderer, {
+    id: "actions-box",
+    flexDirection: "column",
+    flexGrow: 1,
+    width: "100%",
+    border: true,
+    borderColor: parseColor(hue0.border),
+    title: `${tr("actions_title").trim() || "Actions"}`,
     titleAlignment: "center",
     backgroundColor: parseColor(T.surface),
     padding: 1,
@@ -958,7 +980,7 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
     id: "accounts",
     width: "100%",
     height: 12,
-    flexGrow: 2,
+    flexGrow: 1,
     options: [],
     backgroundColor: parseColor(T.surface),
     textColor: parseColor(T.text),
@@ -972,13 +994,6 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
     wrapSelection: true,
     showDescription: true,
     showSelectionIndicator: true,
-  });
-
-  const actionsLabel = new TextRenderable(renderer, {
-    id: "actions-label",
-    content: t`${fg(hue0.bright)(tr("actions_title"))}`,
-    height: 1,
-    width: "100%",
   });
 
   const actionSelect = new SelectRenderable(renderer, {
@@ -1091,27 +1106,28 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
     const hue = providerHue(tab);
     left.borderColor = parseColor(hue.border);
     left.title = `${TAB_LABELS[tab]}${tr("accounts_title")}`;
+    actionsBox.borderColor = parseColor(hue.border);
+    actionsBox.title = `${TAB_LABELS[tab]}${tr("actions_title")}`;
     right.borderColor = parseColor(hue.border);
     right.title = `${TAB_LABELS[tab]}${tr("detail_title")}`;
     accountSelect.selectedBackgroundColor = parseColor(hue.selectedBg);
     accountSelect.selectedTextColor = parseColor(hue.selectedText);
     actionSelect.selectedBackgroundColor = parseColor(hue.selectedBg);
     actionSelect.selectedTextColor = parseColor(hue.selectedText);
-    actionsLabel.content = t`${fg(hue.bright)(tr("actions_title"))}`;
   }
 
   function paintFocus(): void {
     if (!alive) return;
     const hue = providerHue(activeTab);
     if (focusPane === "accounts") {
-      left.borderColor = parseColor(hue.border);
-      actionsLabel.content = t`${fg(hue.dim)(tr("actions_title"))}`;
-    } else if (focusPane === "actions") {
       left.borderColor = parseColor(hue.bright);
-      actionsLabel.content = t`${fg(hue.bright)(tr("actions_title"))}`;
+      actionsBox.borderColor = parseColor(hue.border);
+    } else if (focusPane === "actions") {
+      left.borderColor = parseColor(hue.border);
+      actionsBox.borderColor = parseColor(hue.bright);
     } else {
       left.borderColor = parseColor(T.warn);
-      actionsLabel.content = t`${fg(hue.dim)(tr("actions_title"))}`;
+      actionsBox.borderColor = parseColor(hue.border);
     }
   }
 
@@ -2090,10 +2106,12 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
   });
 
   left.add(accountSelect);
-  left.add(actionsLabel);
-  left.add(actionSelect);
   left.add(editInput);
+  actionsBox.add(actionSelect);
   right.add(detailText);
+
+  leftCol.add(left);
+  leftCol.add(actionsBox);
 
   const body = new BoxRenderable(renderer, {
     id: "body",
@@ -2102,7 +2120,7 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
     gap: 1,
     width: "100%",
   });
-  body.add(left);
+  body.add(leftCol);
   body.add(right);
 
   const root = new BoxRenderable(renderer, {
