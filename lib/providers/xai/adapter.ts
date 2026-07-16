@@ -35,7 +35,12 @@ import {
 import { injectXaiReasoningBody } from "./request/body-bridge.js";
 import { resolveXaiMultiModels } from "./models-sync.js";
 import { fetchGrokBillingQuota } from "./request/billing-quota.js";
-import { fetchGrokPlan } from "./request/plan.js";
+import {
+  deriveRemainingFromPlanUsage,
+  fetchGrokPlan,
+  formatPlanLimit,
+  resolveXaiRemainingPercent,
+} from "./request/plan.js";
 
 const DUMMY_API_KEY = "multi-xai-dummy-key";
 
@@ -121,11 +126,20 @@ function listSubtitle(account: Record<string, unknown>, now: number): string {
   if (typeof account.planName === "string" && account.planName) {
     parts.push(account.planName);
   }
-  if (
-    typeof account.billingRemainingPercent === "number" &&
-    Number.isFinite(account.billingRemainingPercent)
-  ) {
-    parts.push(`${Math.round(account.billingRemainingPercent)}% left`);
+  const rem = resolveXaiRemainingPercent({
+    billingRemainingPercent:
+      typeof account.billingRemainingPercent === "number"
+        ? account.billingRemainingPercent
+        : undefined,
+    planUsed:
+      typeof account.planUsed === "number" ? account.planUsed : undefined,
+    planMonthlyLimit:
+      typeof account.planMonthlyLimit === "number"
+        ? account.planMonthlyLimit
+        : undefined,
+  });
+  if (rem !== undefined) {
+    parts.push(`${Math.round(rem)}% left`);
   }
   if (
     typeof account.quotaResetAt === "number" &&
@@ -147,12 +161,35 @@ function detailLines(account: Record<string, unknown>, now: number): string[] {
     lines.push(`plan: ${account.planName}`);
   }
   if (
-    typeof account.billingRemainingPercent === "number" &&
-    Number.isFinite(account.billingRemainingPercent)
+    typeof account.planUsed === "number" &&
+    typeof account.planMonthlyLimit === "number" &&
+    Number.isFinite(account.planUsed) &&
+    Number.isFinite(account.planMonthlyLimit) &&
+    account.planMonthlyLimit > 0
   ) {
-    lines.push(
-      `credits: ${Math.round(account.billingRemainingPercent)}% remaining`,
+    const derived = deriveRemainingFromPlanUsage(
+      account.planUsed,
+      account.planMonthlyLimit,
     );
+    lines.push(
+      `allowance: ${formatPlanLimit(account.planUsed)} / ${formatPlanLimit(account.planMonthlyLimit)}` +
+        (derived ? ` (${Math.round(derived.remainingPercent)}% left)` : ""),
+    );
+  }
+  const rem = resolveXaiRemainingPercent({
+    billingRemainingPercent:
+      typeof account.billingRemainingPercent === "number"
+        ? account.billingRemainingPercent
+        : undefined,
+    planUsed:
+      typeof account.planUsed === "number" ? account.planUsed : undefined,
+    planMonthlyLimit:
+      typeof account.planMonthlyLimit === "number"
+        ? account.planMonthlyLimit
+        : undefined,
+  });
+  if (rem !== undefined) {
+    lines.push(`credits: ${Math.round(rem)}% remaining`);
   }
   if (
     typeof account.rateLimitRemainingRequests === "number" ||

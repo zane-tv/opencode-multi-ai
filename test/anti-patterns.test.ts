@@ -233,6 +233,24 @@ describe("anti-patterns: plugin modules export only default", () => {
       }),
     );
   });
+
+  it("package root re-exports both PluginModules as named exports (no default)", async () => {
+    const mod = await import("../index.js");
+    expect(Object.keys(mod).sort()).toEqual(["codex", "xai"]);
+    expect(mod.xai).toEqual(
+      expect.objectContaining({
+        id: "xai-multi",
+        server: expect.any(Function),
+      }),
+    );
+    expect(mod.codex).toEqual(
+      expect.objectContaining({
+        id: "codex-multi",
+        server: expect.any(Function),
+      }),
+    );
+    expect((mod as { default?: unknown }).default).toBeUndefined();
+  });
 });
 
 describe("anti-patterns: providers never register built-in ids", () => {

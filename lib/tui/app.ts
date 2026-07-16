@@ -58,6 +58,11 @@ import {
   type Locale,
 } from "../core/i18n.js";
 import { xaiAdapter } from "../providers/xai/adapter.js";
+import {
+  deriveRemainingFromPlanUsage,
+  formatPlanLimit,
+  resolveXaiRemainingPercent,
+} from "../providers/xai/request/plan.js";
 import { codexAdapter } from "../providers/codex/adapter.js";
 import {
   isWindowDisabled,
@@ -128,6 +133,8 @@ const T = {
   disabled: "#9ca3af",
   flag: "#fb923c",
   warn: "#fbbf24",
+  gold: "#e5c07b",
+  meterEmpty: "#3f3f46",
   key: "#c4b5fd",
   label: "#94a3b8",
   value: "#f8fafc",
@@ -296,25 +303,73 @@ function accountStatus(account: AccountMetadata, now: number): StatusKind {
 
 function meterColor(percent: number | undefined): string {
   if (percent === undefined || !Number.isFinite(percent)) return T.textDim;
-  if (percent >= 50) return T.ready;
-  if (percent >= 20) return T.quota;
-  return T.dead;
+  if (percent <= 0 || percent < 15) return T.dead;
+  if (percent < 40) return T.warn;
+  if (percent < 70) return T.gold;
+  return T.ready;
 }
 
-/** 10-cell bar: █████░░░░░ colored by remaining %. */
+function meterDot(percent: number | undefined): string {
+  if (percent === undefined || !Number.isFinite(percent)) return "○";
+  if (percent <= 0 || percent < 15) return "🔴";
+  if (percent < 40) return "🟠";
+  if (percent < 70) return "🟡";
+  return "🟢";
+}
+
+const METER_PARTIALS = ["", "▏", "▎", "▍", "▌", "▋", "▊", "▉"] as const;
+
 function meterBar(percent: number | undefined, width = 10): string {
   if (percent === undefined || !Number.isFinite(percent)) {
     return "—".repeat(Math.min(3, width));
   }
   const clamped = Math.min(100, Math.max(0, percent));
-  const filled = Math.round((clamped / 100) * width);
-  return "█".repeat(filled) + "░".repeat(width - filled);
+  const exact = (clamped / 100) * width;
+  const full = Math.floor(exact);
+  const frac = exact - full;
+  const pi = Math.min(7, Math.floor(frac * 8));
+  const cells: string[] = [];
+  for (let i = 0; i < full; i++) cells.push("█");
+  if (full < width) {
+    if (pi > 0) cells.push(METER_PARTIALS[pi]!);
+    while (cells.length < width) cells.push("░");
+  }
+  return cells.slice(0, width).join("");
+}
+
+function meterParts(
+  percent: number | undefined,
+  width = 10,
+): { filled: string; empty: string } {
+  const bar = meterBar(percent, width);
+  if (percent === undefined || !Number.isFinite(percent)) {
+    return { filled: "", empty: bar };
+  }
+  let filledEnd = 0;
+  for (let i = 0; i < bar.length; i++) {
+    if (bar[i] === "░") break;
+    filledEnd = i + 1;
+  }
+  return { filled: bar.slice(0, filledEnd), empty: bar.slice(filledEnd) };
+}
+
+function meterBarChunks(
+  percent: number | undefined,
+  width = 10,
+): TextChunk[] {
+  if (percent === undefined || !Number.isFinite(percent)) {
+    return [fg(T.textDim)(meterBar(undefined, width))];
+  }
+  const { filled, empty } = meterParts(percent, width);
+  const chunks: TextChunk[] = [];
+  if (filled) chunks.push(fg(meterColor(percent))(filled));
+  if (empty) chunks.push(fg(T.meterEmpty)(empty));
+  return chunks;
 }
 
 function remainingPercent(account: AccountMetadata): number | undefined {
   if (account.provider === "xai") {
-    const p = (account as XaiAccountMetadata).billingRemainingPercent;
-    return typeof p === "number" && Number.isFinite(p) ? p : undefined;
+    return resolveXaiRemainingPercent(account as XaiAccountMetadata);
   }
   const used = (account as CodexAccountMetadata).primaryUsedPercent;
   const win = (account as CodexAccountMetadata).primaryWindowMinutes;
@@ -542,7 +597,7 @@ function accountOptions(
     const marker = a.accountId === sticky ? "*" : " ";
     const glyph = statusGlyph(kind);
     const rem = remainingPercent(a);
-    const bar = meterBar(rem, 8);
+    const bar = meterBar(rem, 10);
     const pct =
       rem === undefined || !Number.isFinite(rem)
         ? "  — "
@@ -552,7 +607,7 @@ function accountOptions(
       a as unknown as Record<string, unknown>,
       now,
     );
-    const description = `${bar} ${pct}  ${subtitle}`;
+    const description = `${meterDot(rem)} │${bar}│ ${pct}  ${subtitle}`;
     return {
       name,
       description,
@@ -639,14 +694,15 @@ function styledDetail(
   }
 
   chunks.push(...sectionHeader("Quota", hue.accent));
-  const bar = meterBar(rem, 12);
   const barColor = meterColor(rem);
   const pctText =
     rem === undefined || !Number.isFinite(rem)
       ? "—"
       : `${Math.round(rem)}% remaining`;
   chunks.push(fg(T.label)("meter       "));
-  chunks.push(fg(barColor)(bar));
+  chunks.push(fg(T.textDim)("│"));
+  chunks.push(...meterBarChunks(rem, 14));
+  chunks.push(fg(T.textDim)("│"));
   chunks.push(fg(T.textDim)("  "));
   chunks.push(bold(fg(barColor)(pctText)));
   chunks.push(fg(T.text)("\n"));
@@ -655,12 +711,37 @@ function styledDetail(
     const x = account as XaiAccountMetadata;
     if (x.planName) chunks.push(...labelValue("plan", x.planName, hue.bright));
     if (
+      typeof x.planUsed === "number" &&
+      typeof x.planMonthlyLimit === "number" &&
+      Number.isFinite(x.planUsed) &&
+      Number.isFinite(x.planMonthlyLimit) &&
+      x.planMonthlyLimit > 0
+    ) {
+      const derived = deriveRemainingFromPlanUsage(
+        x.planUsed,
+        x.planMonthlyLimit,
+      );
+      const usedTxt = formatPlanLimit(x.planUsed);
+      const limTxt = formatPlanLimit(x.planMonthlyLimit);
+      const remTxt =
+        derived !== undefined
+          ? `${Math.round(derived.remainingPercent)}% left`
+          : "—";
+      chunks.push(
+        ...labelValue(
+          "allowance",
+          `${usedTxt} / ${limTxt}  ·  ${remTxt}`,
+          meterColor(derived?.remainingPercent),
+        ),
+      );
+    }
+    if (
       typeof x.billingRemainingPercent === "number" &&
       Number.isFinite(x.billingRemainingPercent)
     ) {
       chunks.push(
         ...labelValue(
-          "credits",
+          "grpc %",
           `${Math.round(x.billingRemainingPercent)}% left`,
           meterColor(x.billingRemainingPercent),
         ),
@@ -1489,7 +1570,43 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
         let fail = 0;
         const billing = asRecord(result.billing);
         const plan = asRecord(result.plan);
-        if (billing) {
+        let planUsed: number | undefined;
+        let planLimit: number | undefined;
+
+        if (plan) {
+          const planName = asString(plan.planName);
+          if (planName) {
+            planUsed = asFiniteNumber(plan.planUsed);
+            planLimit = asFiniteNumber(plan.planMonthlyLimit);
+            await v.recordPlan(account.accountId, {
+              planTier: asFiniteNumber(plan.planTier),
+              planName,
+              planMonthlyLimit: planLimit,
+              planUsed,
+              planPeriodStartMs: asFiniteNumber(plan.planPeriodStartMs),
+              planPeriodEndMs: asFiniteNumber(plan.planPeriodEndMs),
+              observedAt: asFiniteNumber(plan.observedAt) ?? Date.now(),
+            });
+            ok++;
+          } else {
+            fail++;
+          }
+        } else if (result.planError) {
+          fail++;
+        }
+
+        const fromPlan = deriveRemainingFromPlanUsage(planUsed, planLimit);
+        if (fromPlan) {
+          await v.recordBillingQuota(account.accountId, {
+            monthlyUsedPercent: fromPlan.monthlyUsedPercent,
+            remainingPercent: fromPlan.remainingPercent,
+            resetsAtMs:
+              asFiniteNumber(plan?.planPeriodEndMs) ??
+              asFiniteNumber(billing?.resetsAtMs),
+            observedAt: Date.now(),
+          });
+          ok++;
+        } else if (billing) {
           const monthlyUsed = asFiniteNumber(billing.monthlyUsedPercent);
           const remaining = asFiniteNumber(billing.remainingPercent);
           if (monthlyUsed !== undefined && remaining !== undefined) {
@@ -1506,25 +1623,7 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
         } else if (result.billingError) {
           fail++;
         }
-        if (plan) {
-          const planName = asString(plan.planName);
-          if (planName) {
-            await v.recordPlan(account.accountId, {
-              planTier: asFiniteNumber(plan.planTier),
-              planName,
-              planMonthlyLimit: asFiniteNumber(plan.planMonthlyLimit),
-              planUsed: asFiniteNumber(plan.planUsed),
-              planPeriodStartMs: asFiniteNumber(plan.planPeriodStartMs),
-              planPeriodEndMs: asFiniteNumber(plan.planPeriodEndMs),
-              observedAt: asFiniteNumber(plan.observedAt) ?? Date.now(),
-            });
-            ok++;
-          } else {
-            fail++;
-          }
-        } else if (result.planError) {
-          fail++;
-        }
+
         if (ok > 0 && fail > 0) return "partial";
         if (ok > 0) return "success";
         return "failure";

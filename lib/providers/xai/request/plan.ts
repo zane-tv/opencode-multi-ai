@@ -212,7 +212,6 @@ export async function fetchGrokPlan(
   };
 }
 
-/** Remaining % from absolute monthly used/limit (fallback when gRPC % missing). */
 export function deriveRemainingFromPlanUsage(
   used?: number,
   limit?: number,
@@ -232,6 +231,25 @@ export function deriveRemainingFromPlanUsage(
   );
   const remainingPercent = Math.max(0, 100 - Math.round(monthlyUsedPercent));
   return { monthlyUsedPercent, remainingPercent };
+}
+
+/** Prefer plan used/limit over gRPC credits % (absolute SuperGrok allowance). */
+export function resolveXaiRemainingPercent(account: {
+  billingRemainingPercent?: number;
+  planUsed?: number;
+  planMonthlyLimit?: number;
+}): number | undefined {
+  const fromPlan = deriveRemainingFromPlanUsage(
+    account.planUsed,
+    account.planMonthlyLimit,
+  );
+  if (fromPlan) return fromPlan.remainingPercent;
+
+  const bill = account.billingRemainingPercent;
+  if (typeof bill === "number" && Number.isFinite(bill)) {
+    return Math.max(0, Math.min(100, bill));
+  }
+  return undefined;
 }
 
 export function formatPlanLimit(n?: number): string {

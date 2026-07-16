@@ -4,6 +4,7 @@ import {
   inferPlanNameFromLimit,
   planNameFromTier,
   formatPlanLimit,
+  resolveXaiRemainingPercent,
 } from "../lib/providers/xai/request/plan.js";
 
 describe("plan labels", () => {
@@ -30,8 +31,30 @@ describe("plan labels", () => {
   it("derives remaining % from absolute plan usage", () => {
     const d = deriveRemainingFromPlanUsage(1104, 15000);
     expect(d).toBeDefined();
-    expect(d!.remainingPercent).toBe(93); // 100 - round(7.36)
+    expect(d!.remainingPercent).toBe(93);
     expect(d!.monthlyUsedPercent).toBeCloseTo(7.36, 1);
     expect(deriveRemainingFromPlanUsage(undefined, 15000)).toBeUndefined();
+  });
+
+  it("resolveXaiRemainingPercent prefers plan absolute over grpc %", () => {
+    expect(
+      resolveXaiRemainingPercent({
+        planUsed: 61012,
+        planMonthlyLimit: 150000,
+        billingRemainingPercent: 12,
+      }),
+    ).toBe(59);
+    expect(
+      resolveXaiRemainingPercent({
+        planUsed: 0,
+        planMonthlyLimit: 150000,
+        billingRemainingPercent: 59,
+      }),
+    ).toBe(100);
+    expect(
+      resolveXaiRemainingPercent({
+        billingRemainingPercent: 72,
+      }),
+    ).toBe(72);
   });
 });

@@ -109,15 +109,14 @@ npm run install:global    # shims + PATH
 
 ### Wire plugins into OpenCode
 
-OpenCode must load **both** plugin modules (not the package root):
+**One plugin line** loads both providers (package root re-exports `xai` + `codex`):
 
 `~/.config/opencode/opencode.json` or `opencode.jsonc`:
 
 ```jsonc
 {
   "plugin": [
-    "/absolute/path/to/opencode-multi-ai/lib/plugin/xai.ts",
-    "/absolute/path/to/opencode-multi-ai/lib/plugin/codex.ts"
+    "/absolute/path/to/opencode-multi-ai"
   ],
   "provider": {
     "xai-multi": {
@@ -140,17 +139,25 @@ OpenCode must load **both** plugin modules (not the package root):
 }
 ```
 
+Local clone example:
+
+```jsonc
+"plugin": ["/Users/zens/Work/Personal/opencode-multi-ai"]
+```
+
 Or:
 
 ```bash
 bun scripts/install.ts
-# optional — also write both plugin array entries + replace legacy packages:
+# optional — write the single package-root plugin entry + replace legacy packages:
 bun scripts/install.ts --with-plugin-entry --config ~/.config/opencode/opencode.json
 ```
 
 `install.ts` merges **idempotently**:
 
-- Registers **both** `xai-multi` and `codex-multi`
+- Registers **both** providers `xai-multi` and `codex-multi`
+- Writes **one** plugin path (package root) that loads both modules
+- Rewrites old dual paths (`…/lib/plugin/xai.ts` + `…/codex.ts`) → single root
 - Backs up `opencode.json` → `.bak` (does not overwrite an existing bak)
 - Replaces old `opencode-multi-xai` / `opencode-multi-codex` plugin entries
 - Preserves unrelated plugins and built-in `xai` / `openai`

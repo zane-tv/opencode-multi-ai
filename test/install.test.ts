@@ -227,33 +227,21 @@ describe("installProvider — merges without clobbering", () => {
 });
 
 describe("installProvider — plugin entries + legacy replace", () => {
-  it("appends BOTH plugin entries only with --with-plugin-entry", async () => {
+  it("appends ONE package-root plugin entry with --with-plugin-entry", async () => {
     const without = await installProvider(configPath);
     expect(without.pluginEntriesAdded).toEqual([]);
     expect((await readJson(configPath)).plugin).toBeUndefined();
 
     const withEntry = await installProvider(configPath, {
       withPluginEntry: true,
-      pluginEntries: [
-        "opencode-multi-ai/lib/plugin/xai",
-        "opencode-multi-ai/lib/plugin/codex",
-      ],
+      pluginEntries: ["opencode-multi-ai"],
     });
-    expect(withEntry.pluginEntriesAdded).toEqual([
-      "opencode-multi-ai/lib/plugin/xai",
-      "opencode-multi-ai/lib/plugin/codex",
-    ]);
-    expect((await readJson(configPath)).plugin).toEqual([
-      "opencode-multi-ai/lib/plugin/xai",
-      "opencode-multi-ai/lib/plugin/codex",
-    ]);
+    expect(withEntry.pluginEntriesAdded).toEqual(["opencode-multi-ai"]);
+    expect((await readJson(configPath)).plugin).toEqual(["opencode-multi-ai"]);
   });
 
   it("never duplicates plugin array entries on rerun", async () => {
-    const entries = [
-      "opencode-multi-ai/lib/plugin/xai",
-      "opencode-multi-ai/lib/plugin/codex",
-    ];
+    const entries = ["opencode-multi-ai"];
     await installProvider(configPath, {
       withPluginEntry: true,
       pluginEntries: entries,
@@ -288,10 +276,7 @@ describe("installProvider — plugin entries + legacy replace", () => {
 
     const result = await installProvider(configPath, {
       withPluginEntry: true,
-      pluginEntries: [
-        "opencode-multi-ai/lib/plugin/xai",
-        "opencode-multi-ai/lib/plugin/codex",
-      ],
+      pluginEntries: ["opencode-multi-ai"],
     });
 
     expect(result.legacyPluginsRemoved).toEqual(
@@ -299,14 +284,33 @@ describe("installProvider — plugin entries + legacy replace", () => {
     );
     const plugin = (await readJson(configPath)).plugin as unknown[];
     expect(plugin).toContain("some-other-plugin");
-    expect(plugin).toContain("opencode-multi-ai/lib/plugin/xai");
-    expect(plugin).toContain("opencode-multi-ai/lib/plugin/codex");
+    expect(plugin).toContain("opencode-multi-ai");
     expect(plugin).not.toContain("opencode-multi-xai");
     expect(plugin).not.toContain("opencode-multi-codex");
-    // tuple form stripped via first element key
     expect(
       plugin.some((e) => pluginEntryKey(e)?.includes("opencode-multi-xai")),
     ).toBe(false);
+  });
+
+  it("rewrites dual module paths to a single package-root entry", async () => {
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        plugin: [
+          "some-other-plugin",
+          "/tmp/opencode-multi-ai/lib/plugin/xai.ts",
+          "/tmp/opencode-multi-ai/lib/plugin/codex.ts",
+        ],
+      }),
+      "utf8",
+    );
+
+    await installProvider(configPath, {
+      withPluginEntry: true,
+      pluginEntries: ["/tmp/opencode-multi-ai"],
+    });
+    const plugin = (await readJson(configPath)).plugin as string[];
+    expect(plugin).toEqual(["some-other-plugin", "/tmp/opencode-multi-ai"]);
   });
 
   it("preserves other existing plugin array entries", async () => {
@@ -318,23 +322,17 @@ describe("installProvider — plugin entries + legacy replace", () => {
 
     await installProvider(configPath, {
       withPluginEntry: true,
-      pluginEntries: [
-        "opencode-multi-ai/lib/plugin/xai",
-        "opencode-multi-ai/lib/plugin/codex",
-      ],
+      pluginEntries: ["opencode-multi-ai"],
     });
     const plugin = (await readJson(configPath)).plugin as string[];
     expect(plugin[0]).toBe("some-other-plugin");
-    expect(plugin).toContain("opencode-multi-ai/lib/plugin/xai");
-    expect(plugin).toContain("opencode-multi-ai/lib/plugin/codex");
+    expect(plugin).toContain("opencode-multi-ai");
+    expect(plugin).toHaveLength(2);
   });
 
-  it("defaultPluginEntries points at both package plugin modules", () => {
+  it("defaultPluginEntries points at the package root only", () => {
     const entries = defaultPluginEntries("/tmp/pkg");
-    expect(entries).toEqual([
-      path.join("/tmp/pkg", "lib", "plugin", "xai.ts"),
-      path.join("/tmp/pkg", "lib", "plugin", "codex.ts"),
-    ]);
+    expect(entries).toEqual(["/tmp/pkg"]);
     expect(PLUGIN_PACKAGE).toBe("opencode-multi-ai");
   });
 });

@@ -12,13 +12,13 @@ OpenCode multi-account package unifying **SuperGrok (xAI)** and **ChatGPT/Codex*
 | `xai-multi` | `lib/plugin/xai.ts` | `@ai-sdk/xai` | `op-xai` |
 | `codex-multi` | `lib/plugin/codex.ts` | `@ai-sdk/openai` | `op-codex` |
 
-Shared core: sticky rotation, v2 unified storage, agent tools, tabbed OpenTUI (`op-ai`). **Two** OpenCode plugin entries (not one root PluginModule). Ships TypeScript source (Bun/OpenCode load `.ts`; no `dist/`).
+Shared core: sticky rotation, v2 unified storage, agent tools, tabbed OpenTUI (`op-ai`). OpenCode config uses **one package-root plugin path**; `index.ts` re-exports both PluginModules as named exports (`xai`, `codex`) so the legacy loader registers both. Ships TypeScript source (Bun/OpenCode load `.ts`; no `dist/`).
 
 ## STRUCTURE
 
 ```
 opencode-multi-ai/
-├── index.ts                 # NOT a plugin — package meta only
+├── index.ts                 # package root: named exports { xai, codex } (no default)
 ├── install.sh               # curl|bash + local setup
 ├── lib/
 │   ├── core/                # accounts, storage, rotation-fetch, i18n, adapter types
@@ -44,7 +44,7 @@ opencode-multi-ai/
 | Task | Location | Notes |
 |------|----------|-------|
 | OpenCode load | `lib/plugin/xai.ts`, `lib/plugin/codex.ts` | default export `{ id, server }` only |
-| Package root | `index.ts` | never a PluginModule |
+| Package root | `index.ts` | named `{ xai, codex }` PluginModules (no default) |
 | Pool / sticky select | `lib/core/accounts.ts` | provider-scoped selection |
 | Rotation fetch | `lib/core/rotation-fetch.ts` | adapter-driven |
 | Provider adapters | `lib/providers/*/adapter.ts` | host-pin (xAI) vs rewrite (Codex) |
@@ -78,7 +78,7 @@ opencode-multi-ai/
 
 - ESM only; imports use **`.js` extensions** on TS sources. No path aliases.
 - Ship source: `"main": "index.ts"`, `tsc --noEmit`, Bun preferred.
-- **Plugin export hygiene:** each `lib/plugin/*.ts` default-exports **only** `{ id, server }`. No named function exports. Root `index.ts` / `lib/index.ts` must not re-export plugins as callables.
+- **Plugin export hygiene:** each `lib/plugin/*.ts` default-exports **only** `{ id, server }`. No named function exports on those modules. Root `index.ts` re-exports them as **named** `xai` / `codex` only (no default) so one config path loads both.
 - Zod (`lib/core/schemas.ts`) is the **persisted** boundary (`version: 2` unified). Tools use OpenCode `tool.schema`, not Zod.
 - Provider ids **`xai-multi`** and **`codex-multi` only** — never override built-in `xai` / `openai`.
 - Data under `~/.config/opencode/`:
@@ -103,7 +103,7 @@ opencode-multi-ai/
 1. Target `OPENCODE_CONFIG` or `~/.config/opencode/opencode.json`
 2. Backup existing config to `.bak` (once; never overwrite existing bak)
 3. Merge **both** providers (fill missing only; user edits win)
-4. With `--with-plugin-entry`: register **both** plugin modules; strip `opencode-multi-xai` / `opencode-multi-codex` string or path forms
+4. With `--with-plugin-entry`: register **one** package-root plugin path (loads both providers); rewrite dual module paths; strip `opencode-multi-xai` / `opencode-multi-codex` string or path forms
 5. Preserve unrelated plugins; never write built-in `xai` / `openai` as multi ids
 6. Idempotent reinstall
 
@@ -113,7 +113,7 @@ CLI shims (`scripts/install-cli.sh`): all historical bins → `scripts/cli.ts`.
 
 - NEVER raw token/API-key paste — OAuth only (browser/device; Codex also JSON import for OAuth blobs).
 - NEVER override built-in `xai` or `openai` in generated config.
-- NEVER single root PluginModule — always two entries under `lib/plugin/`.
+- NEVER default-export a single PluginModule from package root (would load only one provider). Keep dual named exports; canonical modules stay under `lib/plugin/`.
 - NEVER send xAI bearer except `api.x.ai`; NEVER skip Codex URL rewrite to `chatgpt.com`.
 - NEVER append `Authorization` — always overwrite (dummy SDK key).
 - NEVER set `subscriptionStatus: "dead"` except refresh-grant `invalid_grant`.

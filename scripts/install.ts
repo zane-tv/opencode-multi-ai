@@ -63,18 +63,12 @@ export function packageRoot(): string {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 }
 
-/**
- * Canonical plugin module paths OpenCode should load.
- * Prefer absolute paths so local installs work without npm link.
- */
+/** Single package-root path; loads both providers via named exports in index.ts. */
 export function defaultPluginEntries(root: string = packageRoot()): string[] {
-  return [
-    path.join(root, "lib", "plugin", "xai.ts"),
-    path.join(root, "lib", "plugin", "codex.ts"),
-  ];
+  return [root];
 }
 
-/** Package-subpath form (when the package is resolvable on NODE_PATH / npm). */
+/** Historical dual-module subpaths (still recognized; install rewrites to root). */
 export const PLUGIN_PACKAGE_SUBPATHS = [
   `${PLUGIN_PACKAGE}/lib/plugin/xai`,
   `${PLUGIN_PACKAGE}/lib/plugin/codex`,
@@ -187,18 +181,44 @@ function isLegacyPluginKey(key: string): boolean {
   return false;
 }
 
-function isOurPluginKey(key: string, desired: string[]): boolean {
+export function isOurPluginKey(key: string, desired: string[] = []): boolean {
   if (desired.includes(key)) return true;
   for (const sub of PLUGIN_PACKAGE_SUBPATHS) {
     if (key === sub) return true;
   }
   if (key === PLUGIN_PACKAGE) return true;
+  const n = key.replace(/\\/g, "/");
+  if (n.endsWith(`/${PLUGIN_PACKAGE}`) || n.endsWith(`/${PLUGIN_PACKAGE}/`)) {
+    return true;
+  }
+  if (n.endsWith(`/${PLUGIN_PACKAGE}/index.ts`)) return true;
+  if (n.includes(`/${PLUGIN_PACKAGE}/lib/plugin/`)) return true;
   if (key.includes(`${path.sep}lib${path.sep}plugin${path.sep}xai`)) return true;
   if (key.includes(`${path.sep}lib${path.sep}plugin${path.sep}codex`)) return true;
   if (key.includes("/lib/plugin/xai") || key.includes("/lib/plugin/codex")) {
     return true;
   }
   return false;
+}
+
+export function stripOurPluginEntries(
+  config: Record<string, unknown>,
+): string[] {
+  const current = config.plugin;
+  if (!Array.isArray(current)) return [];
+
+  const removed: string[] = [];
+  const next: unknown[] = [];
+  for (const entry of current) {
+    const key = pluginEntryKey(entry);
+    if (key !== null && isOurPluginKey(key)) {
+      removed.push(key);
+      continue;
+    }
+    next.push(entry);
+  }
+  config.plugin = next;
+  return removed;
 }
 
 /**
@@ -261,12 +281,12 @@ export function mergePluginEntries(
   return added;
 }
 
-/** Loose match so absolute xai.ts and package subpath don't both get added. */
 function pathsReferToSamePlugin(a: string, b: string): boolean {
   const norm = (s: string) => s.replace(/\\/g, "/").replace(/\.ts$/, "");
   const na = norm(a);
   const nb = norm(b);
   if (na === nb) return true;
+  if (isOurPluginKey(a) && isOurPluginKey(b)) return true;
   const aXai = na.includes("plugin/xai") || na.endsWith("/xai");
   const bXai = nb.includes("plugin/xai") || nb.endsWith("/xai");
   const aCodex = na.includes("plugin/codex") || na.endsWith("/codex");
@@ -469,7 +489,22 @@ export async function installProvider(
   let pluginEntriesAdded: string[] = [];
   if (options.withPluginEntry) {
     const desired = options.pluginEntries ?? defaultPluginEntries();
-    pluginEntriesAdded = mergePluginEntries(config, desired);
+    const prior = Array.isArray(config.plugin)
+      ? config.plugin
+          .map((e) => pluginEntryKey(e))
+          .filter((k): k is string => typeof k === "string")
+      : [];
+    stripOurPluginEntries(config);
+    mergePluginEntries(config, desired);
+    // Report only truly new package registrations (not dual→root rewrites / reruns).
+    pluginEntriesAdded = desired.filter(
+      (entry) =>
+        !prior.some(
+          (key) =>
+            key === entry ||
+            (isOurPluginKey(key) && pathsReferToSamePlugin(key, entry)),
+        ),
+    );
   }
 
   const body = `${JSON.stringify(config, null, 2)}\n`;
