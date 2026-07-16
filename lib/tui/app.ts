@@ -5,10 +5,15 @@
  * Visual language: dark surfaces + vivid per-provider hues, status badges,
  * and green→amber→red quota meters. Select rows are plain strings (API limit)
  * with colored status glyphs; brand/tabs/header/detail/footer use StyledText.
+ *
+ * Full plugin-parity: VI+EN locale (g), provider-scoped actions, OAuth add,
+ * quota probe, live toggle, two-press remove/prune, edit label/tags/note.
  */
 
 import {
   BoxRenderable,
+  InputRenderable,
+  InputRenderableEvents,
   SelectRenderable,
   SelectRenderableEvents,
   TextRenderable,
@@ -41,7 +46,17 @@ import {
   type StatusAccount,
 } from "../core/tui-status.js";
 import type { ProviderAdapter } from "../core/adapter.js";
-import { formatUntil } from "../core/format-time.js";
+import {
+  formatDateTime,
+  formatUntil,
+} from "../core/format-time.js";
+import {
+  getLocale,
+  localeLabel,
+  toggleLocale,
+  t as tr,
+  type Locale,
+} from "../core/i18n.js";
 import { xaiAdapter } from "../providers/xai/adapter.js";
 import { codexAdapter } from "../providers/codex/adapter.js";
 import {
@@ -64,6 +79,16 @@ import {
   bumpGeneration,
   isStaleResult,
 } from "./tabs.js";
+import {
+  TUI_BINDINGS,
+  advanceConfirmation,
+  clearConfirmation,
+  decodeTuiAction,
+  normalizeTags,
+  type ConfirmationState,
+  type TuiAction,
+  type TuiKeyEvent,
+} from "./action-helpers.js";
 
 /** Coherent dark theme with vivid status + provider accents. */
 const T = {
@@ -76,12 +101,10 @@ const T = {
   textDim: "#8a8a8a",
   selectedBg: "#1e2a33",
 
-  // Brand
   brandOp: "#7dd3fc",
   brandAi: "#a78bfa",
   brandSep: "#6b7280",
 
-  // xAI — electric blue/cyan family
   xai: "#38bdf8",
   xaiBright: "#7dd3fc",
   xaiDim: "#0e7490",
@@ -89,7 +112,6 @@ const T = {
   xaiSelectedBg: "#0c2a3a",
   xaiSelectedText: "#7dd3fc",
 
-  // Codex — emerald/green family
   codex: "#34d399",
   codexBright: "#6ee7b7",
   codexDim: "#047857",
@@ -97,7 +119,6 @@ const T = {
   codexSelectedBg: "#0c2a1f",
   codexSelectedText: "#6ee7b7",
 
-  // Status
   ready: "#4ade80",
   quota: "#fbbf24",
   cooling: "#22d3ee",
@@ -146,11 +167,75 @@ const ADAPTERS: Record<ProviderKind, ProviderAdapter> = {
   codex: codexAdapter,
 };
 
+type StatusTone = "ok" | "warn" | "err" | "info" | "neutral";
+
+type SemanticStatus = {
+  key?: string;
+  vars?: Record<string, string | number>;
+  text?: string;
+  tone: StatusTone;
+};
+
+type EditField = "label" | "tags" | "note";
+
+type EditContext = {
+  provider: TuiTab;
+  accountId: string;
+  field: EditField;
+};
+
+type ProbeOutcome = "success" | "partial" | "failure";
+
 export type RunTuiOptions = {
   /** Initial provider tab. */
   initialTab?: TuiTab;
   /** Optional pre-built manager (tests / CLI). */
   manager?: AccountManager;
+  createRenderer?: typeof createCliRenderer;
+  probeQuota?: (
+    tab: TuiTab,
+    accessToken: string,
+    account: { accountId: string; organizationId?: string },
+  ) => Promise<Record<string, unknown>>;
+  login?: {
+    xai?: {
+      browserLogin?: (
+        view: ProviderAccountView,
+        opts?: {
+          openBrowser?: boolean;
+          onAuthorizeUrl?: (url: string) => void;
+          signal?: AbortSignal;
+        },
+      ) => Promise<{ accountId: string; email?: string; outcome: string }>;
+      deviceCodeLoginFlow?: (
+        view: ProviderAccountView,
+        onPrompt?: (p: {
+          verificationUri: string;
+          userCode: string;
+        }) => void,
+        signal?: AbortSignal,
+      ) => Promise<{ accountId: string; email?: string; outcome: string }>;
+    };
+    codex?: {
+      browserLogin?: (
+        view: ProviderAccountView,
+        opts?: {
+          openBrowser?: boolean;
+          onAuthorizeUrl?: (url: string) => void;
+          signal?: AbortSignal;
+          forceNewLogin?: boolean;
+        },
+      ) => Promise<{ accountId: string; email?: string; outcome: string }>;
+      deviceCodeLoginFlow?: (
+        view: ProviderAccountView,
+        onPrompt?: (p: {
+          verificationUri: string;
+          userCode: string;
+        }) => void,
+        signal?: AbortSignal,
+      ) => Promise<{ accountId: string; email?: string; outcome: string }>;
+    };
+  };
 };
 
 function providerHue(tab: TuiTab): {
@@ -261,7 +346,7 @@ function joinChunks(chunks: TextChunk[]): StyledText {
 }
 
 function styledBrand(): StyledText {
-  return t`${bold(fg(T.brandOp)("op"))}${fg(T.brandSep)("-")}${bold(fg(T.brandAi)("ai"))}${fg(T.textDim)(" · ")}${fg(T.textMuted)("multi-account pool")}`;
+  return t`${bold(fg(T.brandOp)("op"))}${fg(T.brandSep)("-")}${bold(fg(T.brandAi)("ai"))}${fg(T.textDim)(" · ")}${fg(T.textMuted)(tr("brand").trim() || "multi-account pool")}`;
 }
 
 function styledTabBar(active: TuiTab): StyledText {
@@ -298,13 +383,12 @@ function styledHeader(
     activeIndex,
     now,
     {
-      prefix: activeTabPrefix(tab),
+      prefix: tab,
       pruneCommand: `${tab}-prune`,
     },
   );
-  // Re-color the same semantic segments for legibility.
   if (accounts.length === 0) {
-    return t`${bold(fg(hue.bright)(TAB_LABELS[tab]))}${fg(T.textDim)(" · ")}${fg(T.warn)("no accounts")}`;
+    return t`${bold(fg(hue.bright)(TAB_LABELS[tab]))}${fg(T.textDim)(" · ")}${fg(T.warn)(tr("empty_pool").trim())}`;
   }
   const summary = summarizePool(accounts as StatusAccount[], now);
   const chunks: TextChunk[] = [
@@ -338,29 +422,102 @@ function styledHeader(
     const warnParts: string[] = [];
     if (summary.dead > 0) warnParts.push(`${summary.dead} dead`);
     if (summary.flagged > 0) warnParts.push(`${summary.flagged} flagged`);
-    chunks.push(
-      bold(fg(T.dead)(`⚠ ${warnParts.join(", ")}`)),
-    );
+    chunks.push(bold(fg(T.dead)(`⚠ ${warnParts.join(", ")}`)));
     chunks.push(fg(T.textDim)(` (run ${tab}-prune)`));
   }
-  // Keep plain string reachable for debugging/tests of status content shape.
   void plain;
   return joinChunks(chunks);
 }
 
-function activeTabPrefix(tab: TuiTab): string {
-  return tab;
+function toneColor(tone: StatusTone): string {
+  switch (tone) {
+    case "ok":
+      return T.ready;
+    case "warn":
+      return T.warn;
+    case "err":
+      return T.dead;
+    case "info":
+      return T.cooling;
+    default:
+      return T.value;
+  }
 }
 
-function styledHints(message?: string): StyledText {
-  if (message) {
-    return t`${bold(fg(T.ready)("✓"))}${fg(T.textDim)(" ")}${fg(T.value)(message)}`;
+function resolveStatusMessage(status: SemanticStatus | undefined): string {
+  if (!status) return "";
+  if (status.key) return tr(status.key, status.vars);
+  return status.text ?? "";
+}
+
+function styledHints(
+  status: SemanticStatus | undefined,
+  liveEnabled: boolean,
+  liveBusy: boolean,
+): StyledText {
+  const msg = resolveStatusMessage(status);
+  if (msg) {
+    const glyph =
+      status?.tone === "err" ? "✗" : status?.tone === "warn" ? "!" : "✓";
+    const color = toneColor(status?.tone ?? "ok");
+    return t`${bold(fg(color)(glyph))}${fg(T.textDim)(" ")}${fg(T.value)(msg)}`;
   }
-  return t`${fg(T.key)("↑↓")}${fg(T.textDim)(" select  ")}${fg(T.key)("s")}${fg(T.textDim)(" sticky  ")}${fg(T.key)("r")}${fg(T.textDim)(" reload  ")}${fg(T.key)("q")}${fg(T.textDim)(" quit  ")}${fg(T.cooling)("live probe 30s")}`;
+  const live = liveBusy
+    ? tr("live_busy")
+    : liveEnabled
+      ? tr("live_on")
+      : tr("live_off");
+  return t`${fg(T.key)("↑↓")}${fg(T.textDim)(" select  ")}${fg(T.key)("s")}${fg(T.textDim)(" sticky  ")}${fg(T.key)("r")}${fg(T.textDim)(" refresh  ")}${fg(T.key)("g")}${fg(T.textDim)(" lang  ")}${fg(T.key)("q")}${fg(T.textDim)(" quit")}${fg(T.cooling)(live)}`;
 }
 
 function styledFooter(): StyledText {
-  return t`${fg(T.key)("1")}${fg(T.textDim)("/")}${fg(T.key)("2")}${fg(T.textDim)(" or ")}${fg(T.key)("Tab")}${fg(T.textDim)(": provider  ")}${fg(T.key)("s")}${fg(T.textDim)(": sticky switch  ")}${fg(T.key)("r")}${fg(T.textDim)(": reload  ")}${fg(T.key)("q")}${fg(T.textDim)(": quit")}`;
+  // Footer from registry — only implemented bindings, no phantoms.
+  const chunks: TextChunk[] = [];
+  const shown = TUI_BINDINGS.filter((b) => b.available);
+  for (let i = 0; i < shown.length; i++) {
+    const b = shown[i]!;
+    if (i > 0) chunks.push(fg(T.textDim)("  "));
+    chunks.push(fg(T.key)(b.key));
+    chunks.push(fg(T.textDim)(":"));
+    // Short token from label key (first word after key letter in catalog)
+    const label = tr(b.labelKey).replace(/^\S+\s+/, "").trim() || b.labelKey;
+    chunks.push(fg(T.textDim)(label.length > 14 ? label.slice(0, 14) : label));
+  }
+  return joinChunks(chunks);
+}
+
+function styledHelp(activeTab: TuiTab, locale: Locale): StyledText {
+  void locale;
+  const hue = providerHue(activeTab);
+  const chunks: TextChunk[] = [
+    bold(fg(hue.bright)(tr("how_to_add"))),
+    fg(T.text)("\n"),
+    fg(T.textDim)("─".repeat(40)),
+    fg(T.text)("\n"),
+  ];
+  if (activeTab === "codex") {
+    chunks.push(bold(fg(hue.bright)("CLI JSON import")));
+    chunks.push(fg(T.text)("\n"));
+    chunks.push(
+      fg(T.textDim)(
+        "  op-codex import-json <file>  — OAuth JSON (CLI only)",
+      ),
+    );
+    chunks.push(fg(T.text)("\n"));
+    chunks.push(
+      fg(T.textDim)("  op-codex import-json --text '{...}'"),
+    );
+    chunks.push(fg(T.text)("\n\n"));
+  }
+  for (const b of TUI_BINDINGS) {
+    if (!b.available) continue;
+    chunks.push(fg(T.key)(b.key.padEnd(4)));
+    chunks.push(fg(T.value)(tr(b.labelKey)));
+    chunks.push(fg(T.text)("\n"));
+  }
+  chunks.push(fg(T.text)("\n"));
+  chunks.push(fg(T.textDim)(`locale: ${localeLabel(getLocale())}  (? closes)`));
+  return joinChunks(chunks);
 }
 
 function accountOptions(
@@ -373,8 +530,8 @@ function accountOptions(
   if (accounts.length === 0) {
     return [
       {
-        name: "○  (no accounts)",
-        description: "press q to quit · use CLI add / auth login",
+        name: `○  ${tr("empty_pool").trim()}`,
+        description: tr("empty_hint"),
         value: -1,
       },
     ];
@@ -431,7 +588,7 @@ function styledDetail(
 ): StyledText {
   const hue = providerHue(tab);
   if (!account) {
-    return t`${fg(T.warn)("No account selected.")}${fg(T.text)("\n\n")}${fg(T.label)("Add via:")}${fg(T.text)("\n")}${fg(T.key)("  op-xai add")}${fg(T.textDim)(" / ")}${fg(T.key)("op-codex add")}${fg(T.text)("\n")}${fg(T.key)("  opencode auth login")}`;
+    return t`${fg(T.warn)(tr("no_accounts"))}`;
   }
 
   const kind = accountStatus(account, now);
@@ -442,10 +599,9 @@ function styledDetail(
   chunks.push(bold(fg(hue.bright)(accountDisplayName(account))));
   chunks.push(fg(T.text)("\n"));
   chunks.push(fg(T.label)("status      "));
-  chunks.push(bold(fg(statusColor)(`${statusGlyph(kind)} ${STATUS_LABEL[kind]}`)));
-  if (account.accountId === undefined) {
-    /* keep type narrow */
-  }
+  chunks.push(
+    bold(fg(statusColor)(`${statusGlyph(kind)} ${STATUS_LABEL[kind]}`)),
+  );
   chunks.push(fg(T.text)("\n"));
 
   chunks.push(
@@ -463,11 +619,16 @@ function styledDetail(
   if (account.label) {
     chunks.push(...labelValue("label", account.label, hue.bright));
   }
+  if (account.tags && account.tags.length > 0) {
+    chunks.push(...labelValue("tags", account.tags.join(", "), T.textMuted));
+  }
+  if (account.note) {
+    chunks.push(...labelValue("note", account.note, T.textMuted));
+  }
   if (typeof account.priority === "number") {
     chunks.push(...labelValue("priority", String(account.priority)));
   }
 
-  // Quota meter
   chunks.push(...sectionHeader("Quota", hue.accent));
   const bar = meterBar(rem, 12);
   const barColor = meterColor(rem);
@@ -562,7 +723,6 @@ function styledDetail(
     }
   }
 
-  // Timing / flags
   chunks.push(...sectionHeader("State", hue.accent));
   if (
     typeof account.quotaResetAt === "number" &&
@@ -586,6 +746,11 @@ function styledDetail(
         formatUntil(account.coolingDownUntil, now),
         T.cooling,
       ),
+    );
+  }
+  if (typeof account.addedAt === "number") {
+    chunks.push(
+      ...labelValue("added", formatDateTime(account.addedAt), T.textMuted),
     );
   }
   chunks.push(
@@ -613,7 +778,6 @@ function styledDetail(
     chunks.push(...labelValue("flagged", "for removal", T.flag));
   }
 
-  // Adapter extra lines (provider-specific, as plain values under a section)
   const extra = adapter.detailLines(
     account as unknown as Record<string, unknown>,
     now,
@@ -621,7 +785,6 @@ function styledDetail(
   if (extra.length > 0) {
     chunks.push(...sectionHeader("Provider", hue.accent));
     for (const line of extra) {
-      // Avoid duplicating name/id already shown above.
       if (/^(id:|email:)/i.test(line)) continue;
       const colon = line.indexOf(":");
       if (colon > 0 && colon < 18) {
@@ -635,11 +798,25 @@ function styledDetail(
     }
   }
 
-  // Short id footer for copy-friendly reference
   chunks.push(fg(T.textDim)("\n"));
   chunks.push(fg(T.textDim)(`# ${shortAccountId(account.accountId)}`));
 
   return joinChunks(chunks);
+}
+
+function asRecord(v: unknown): Record<string, unknown> | undefined {
+  if (v && typeof v === "object" && !Array.isArray(v)) {
+    return v as Record<string, unknown>;
+  }
+  return undefined;
+}
+
+function asFiniteNumber(v: unknown): number | undefined {
+  return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+}
+
+function asString(v: unknown): string | undefined {
+  return typeof v === "string" ? v : undefined;
 }
 
 /**
@@ -649,20 +826,22 @@ function styledDetail(
  * stale probe results never paint the wrong tab.
  */
 export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
-  const manager = opts.manager ?? new AccountManager(undefined, {
-    xai: async (refreshToken) => {
-      const { refreshTokens } = await import(
-        "../providers/xai/auth/oauth.js"
-      );
-      return refreshTokens(refreshToken);
-    },
-    codex: async (refreshToken) => {
-      const { refreshTokens } = await import(
-        "../providers/codex/auth/oauth.js"
-      );
-      return refreshTokens(refreshToken);
-    },
-  });
+  const manager =
+    opts.manager ??
+    new AccountManager(undefined, {
+      xai: async (refreshToken) => {
+        const { refreshTokens } = await import(
+          "../providers/xai/auth/oauth.js"
+        );
+        return refreshTokens(refreshToken);
+      },
+      codex: async (refreshToken) => {
+        const { refreshTokens } = await import(
+          "../providers/codex/auth/oauth.js"
+        );
+        return refreshTokens(refreshToken);
+      },
+    });
   await manager.load();
 
   let activeTab: TuiTab = opts.initialTab ?? "xai";
@@ -674,15 +853,33 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
   let alive = true;
   let liveTimer: ReturnType<typeof setInterval> | null = null;
   let refreshing = false;
+  let busy = false;
+  let liveEnabled = true;
+  let liveBusy = false;
+  let helpVisible = false;
+  let confirmation: ConfirmationState = { kind: "none" };
+  let semanticStatus: SemanticStatus | undefined;
+  let editMode = false;
+  let editContext: EditContext | null = null;
+  let addAbort: AbortController | null = null;
 
   function teardown(): void {
     if (!alive) return;
     alive = false;
     stopLive();
+    if (addAbort) {
+      try {
+        addAbort.abort();
+      } catch {
+        /* ignore */
+      }
+      addAbort = null;
+    }
     for (const tab of TUI_TABS) gens = bumpGeneration(gens, tab);
   }
 
-  const renderer = await createCliRenderer({
+  const makeRenderer = opts.createRenderer ?? createCliRenderer;
+  const renderer = await makeRenderer({
     exitOnCtrlC: true,
     targetFps: 30,
     backgroundColor: T.bg,
@@ -714,7 +911,7 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
 
   const statusText = new TextRenderable(renderer, {
     id: "status",
-    content: styledHints(),
+    content: styledHints(undefined, liveEnabled, liveBusy),
     height: 1,
     width: "100%",
   });
@@ -728,7 +925,7 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
     height: "100%",
     border: true,
     borderColor: parseColor(hue0.border),
-    title: "Accounts",
+    title: `${tr("accounts_title").trim() || "Accounts"}`,
     titleAlignment: "center",
     backgroundColor: parseColor(T.surface),
     padding: 1,
@@ -741,7 +938,7 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
     height: "100%",
     border: true,
     borderColor: parseColor(T.border),
-    title: "Detail",
+    title: `${tr("detail_title").trim() || "Detail"}`,
     titleAlignment: "center",
     backgroundColor: parseColor(T.surface),
     padding: 1,
@@ -766,6 +963,17 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
     showSelectionIndicator: true,
   });
 
+  const editInput = new InputRenderable(renderer, {
+    id: "edit-input",
+    width: "100%",
+    visible: false,
+    backgroundColor: parseColor(T.surfaceRaised),
+    textColor: parseColor(T.value),
+    focusedBackgroundColor: parseColor(T.surfaceRaised),
+    focusedTextColor: parseColor(T.value),
+    placeholder: "",
+  });
+
   const detailText = new TextRenderable(renderer, {
     id: "detail",
     content: t`${fg(T.text)("")}`,
@@ -788,14 +996,77 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
     return ADAPTERS[activeTab];
   }
 
+  function setStatus(next: SemanticStatus | undefined): void {
+    semanticStatus = next;
+    if (!alive) return;
+    try {
+      statusText.content = styledHints(semanticStatus, liveEnabled, liveBusy);
+    } catch {
+      void 0;
+    }
+  }
+
+  function selectedAccount(): AccountMetadata | undefined {
+    const accounts = view().list();
+    let idx = selection[activeTab]!;
+    try {
+      const live = accountSelect.getSelectedIndex();
+      if (
+        typeof live === "number" &&
+        live >= 0 &&
+        live < accounts.length
+      ) {
+        idx = live;
+        selection = setSelectedForTab(
+          selection,
+          activeTab,
+          live,
+          accounts.length,
+        );
+      }
+    } catch {
+      void 0;
+    }
+    return accounts[idx];
+  }
+
+  function selectedId(): string | undefined {
+    return selectedAccount()?.accountId;
+  }
+
+  function restoreSelectionById(tab: TuiTab, id: string | undefined): void {
+    const list = manager.providerView(tab).list();
+    if (!id || list.length === 0) {
+      selection = setSelectedForTab(selection, tab, 0, list.length);
+      return;
+    }
+    const idx = list.findIndex((a) => a.accountId === id);
+    selection = setSelectedForTab(
+      selection,
+      tab,
+      idx >= 0 ? idx : 0,
+      list.length,
+    );
+  }
+
   function applyProviderChrome(tab: TuiTab): void {
     const hue = providerHue(tab);
     left.borderColor = parseColor(hue.border);
-    left.title = `${TAB_LABELS[tab]} accounts`;
+    left.title = `${TAB_LABELS[tab]}${tr("accounts_title")}`;
     right.borderColor = parseColor(hue.border);
-    right.title = `${TAB_LABELS[tab]} detail`;
+    right.title = `${TAB_LABELS[tab]}${tr("detail_title")}`;
     accountSelect.selectedBackgroundColor = parseColor(hue.selectedBg);
     accountSelect.selectedTextColor = parseColor(hue.selectedText);
+  }
+
+  function paintDetail(): void {
+    if (helpVisible) {
+      detailText.content = styledHelp(activeTab, getLocale());
+      return;
+    }
+    const accounts = view().list();
+    const acc = accounts[selection[activeTab]!];
+    detailText.content = styledDetail(acc, adapter(), Date.now(), activeTab);
   }
 
   function refreshViews(): void {
@@ -815,8 +1086,8 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
       const hue = providerHue(activeTab);
 
       applyProviderChrome(activeTab);
+      brandText.content = styledBrand();
       tabText.content = styledTabBar(activeTab);
-      // Keep plain bar available for callers that only need brackets.
       void renderTabBar(activeTab);
       headerText.content = styledHeader(
         accounts,
@@ -824,6 +1095,8 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
         now,
         activeTab,
       );
+      statusText.content = styledHints(semanticStatus, liveEnabled, liveBusy);
+      footer.content = styledFooter();
 
       accountSelect.options = accountOptions(v, adapter(), now);
       accountSelect.selectedBackgroundColor = parseColor(hue.selectedBg);
@@ -832,85 +1105,686 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
         accountSelect.setSelectedIndex(selected);
       }
 
-      const acc = accounts[selected];
-      detailText.content = styledDetail(acc, adapter(), now, activeTab);
+      paintDetail();
+    } catch {
+      void 0;
     } finally {
       refreshing = false;
     }
   }
 
+  function disarmConfirmation(reason?: string): void {
+    if (confirmation.kind === "none") return;
+    confirmation = clearConfirmation(confirmation);
+    if (reason) setStatus({ text: reason, tone: "info" });
+  }
+
   function switchTab(next: TuiTab): void {
     if (next === activeTab) return;
-    // Bump generation on the tab we leave so in-flight live work is ignored.
+    if (editMode) cancelEdit();
     gens = bumpGeneration(gens, activeTab);
     activeTab = next;
+    helpVisible = false;
+    disarmConfirmation();
     refreshViews();
   }
+
+  function cancelEdit(): void {
+    editMode = false;
+    editContext = null;
+    editInput.visible = false;
+    editInput.value = "";
+    editInput.blur();
+    accountSelect.focus();
+  }
+
+  function beginEdit(field: EditField): void {
+    const acc = selectedAccount();
+    if (!acc) return;
+    editMode = true;
+    editContext = {
+      provider: activeTab,
+      accountId: acc.accountId,
+      field,
+    };
+    helpVisible = false;
+    const seed =
+      field === "label"
+        ? (acc.label ?? "")
+        : field === "tags"
+          ? (acc.tags ?? []).join(", ")
+          : (acc.note ?? "");
+    editInput.placeholder =
+      field === "label"
+        ? seed
+          ? `label (was: ${seed})`
+          : "label (empty clears)"
+        : field === "tags"
+          ? seed
+            ? `tags (was: ${seed})`
+            : "tags, comma-separated"
+          : seed
+            ? `note (was: ${seed})`
+            : "note (empty clears)";
+    editInput.visible = true;
+    editInput.value = "";
+    editInput.focus();
+    // Drop the triggering key (l/t/n) if Input also consumed it.
+    queueMicrotask(() => {
+      if (editMode && editInput.visible) editInput.value = "";
+    });
+    setStatus({
+      text: `editing ${field} — Enter save · Esc cancel`,
+      tone: "info",
+    });
+  }
+
+  async function commitEdit(): Promise<void> {
+    if (!editContext) {
+      cancelEdit();
+      return;
+    }
+    const { provider, accountId, field } = editContext;
+    const raw = editInput.value;
+    const v = manager.providerView(provider);
+    try {
+      if (field === "label") {
+        const next = raw.trim() === "" ? undefined : raw.trim();
+        await v.setLabel(accountId, next);
+      } else if (field === "tags") {
+        await v.setTags(accountId, normalizeTags(raw));
+      } else {
+        const next = raw.trim() === "" ? undefined : raw;
+        await v.setNote(accountId, next);
+      }
+      setStatus({ text: `${field} saved`, tone: "ok" });
+    } catch (err) {
+      setStatus({
+        text: `${field} failed: ${(err as Error).message}`,
+        tone: "err",
+      });
+    }
+    cancelEdit();
+    restoreSelectionById(provider, accountId);
+    refreshViews();
+  }
+
+  editInput.on(InputRenderableEvents.ENTER, () => {
+    void commitEdit();
+  });
 
   accountSelect.on(
     SelectRenderableEvents.SELECTION_CHANGED,
     (_opt: SelectOption | null, idx: number) => {
       if (refreshing) return;
+      const prevId = selectedId();
       selection = setSelectedForTab(
         selection,
         activeTab,
         idx,
         view().list().length,
       );
-      const accounts = view().list();
-      const acc = accounts[selection[activeTab]!];
-      detailText.content = styledDetail(
-        acc,
-        adapter(),
-        Date.now(),
-        activeTab,
-      );
+      const nextId = selectedId();
+      if (confirmation.kind === "remove" && nextId !== prevId) {
+        disarmConfirmation();
+      }
+      if (helpVisible) {
+        helpVisible = false;
+      }
+      paintDetail();
     },
   );
 
-  async function switchSticky(): Promise<void> {
-    const accounts = view().list();
-    const acc = accounts[selection[activeTab]!];
-    if (!acc) return;
-    await view().switchTo(acc.accountId);
-    statusText.content = styledHints(
-      `Active ${TAB_LABELS[activeTab]}: ${accountDisplayName(acc)}`,
-    );
-    refreshViews();
+  async function probeAndRecord(
+    tab: TuiTab,
+    v: ProviderAccountView,
+    account: AccountMetadata,
+  ): Promise<ProbeOutcome> {
+    const ad = ADAPTERS[tab];
+    if (!ad.probeQuota) return "failure";
+    try {
+      const tokens = await v.ensureFreshToken(account.accountId);
+      const orgId =
+        account.provider === "codex"
+          ? (account as CodexAccountMetadata).organizationId
+          : undefined;
+      const probeArgs = {
+        accountId: account.accountId,
+        organizationId: orgId,
+      };
+      const raw = opts.probeQuota
+        ? await opts.probeQuota(tab, tokens.accessToken, probeArgs)
+        : await ad.probeQuota!(tokens.accessToken, probeArgs);
+      const result = asRecord(raw) ?? {};
+
+      if (tab === "xai") {
+        let ok = 0;
+        let fail = 0;
+        const billing = asRecord(result.billing);
+        const plan = asRecord(result.plan);
+        if (billing) {
+          const monthlyUsed = asFiniteNumber(billing.monthlyUsedPercent);
+          const remaining = asFiniteNumber(billing.remainingPercent);
+          if (monthlyUsed !== undefined && remaining !== undefined) {
+            await v.recordBillingQuota(account.accountId, {
+              monthlyUsedPercent: monthlyUsed,
+              remainingPercent: remaining,
+              resetsAtMs: asFiniteNumber(billing.resetsAtMs),
+              observedAt: asFiniteNumber(billing.observedAt) ?? Date.now(),
+            });
+            ok++;
+          } else {
+            fail++;
+          }
+        } else if (result.billingError) {
+          fail++;
+        }
+        if (plan) {
+          const planName = asString(plan.planName);
+          if (planName) {
+            await v.recordPlan(account.accountId, {
+              planTier: asFiniteNumber(plan.planTier),
+              planName,
+              planMonthlyLimit: asFiniteNumber(plan.planMonthlyLimit),
+              planUsed: asFiniteNumber(plan.planUsed),
+              planPeriodStartMs: asFiniteNumber(plan.planPeriodStartMs),
+              planPeriodEndMs: asFiniteNumber(plan.planPeriodEndMs),
+              observedAt: asFiniteNumber(plan.observedAt) ?? Date.now(),
+            });
+            ok++;
+          } else {
+            fail++;
+          }
+        } else if (result.planError) {
+          fail++;
+        }
+        if (ok > 0 && fail > 0) return "partial";
+        if (ok > 0) return "success";
+        return "failure";
+      }
+
+      // codex
+      await v.recordUsage(account.accountId, {
+        planType: asString(result.planType),
+        primaryUsedPercent: asFiniteNumber(result.primaryUsedPercent),
+        primaryWindowMinutes: asFiniteNumber(result.primaryWindowMinutes),
+        primaryResetAt: asFiniteNumber(result.primaryResetAt),
+        secondaryUsedPercent: asFiniteNumber(result.secondaryUsedPercent),
+        secondaryWindowMinutes: asFiniteNumber(result.secondaryWindowMinutes),
+        secondaryResetAt: asFiniteNumber(result.secondaryResetAt),
+        activeLimit: asString(result.activeLimit),
+        observedAt: asFiniteNumber(result.observedAt) ?? Date.now(),
+      });
+      return "success";
+    } catch {
+      return "failure";
+    }
+  }
+
+  async function withBusy(fn: () => Promise<void>): Promise<void> {
+    if (busy) return;
+    busy = true;
+    try {
+      await fn();
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function runAction(action: TuiAction): Promise<void> {
+    switch (action) {
+      case "quit": {
+        if (addAbort) {
+          try {
+            addAbort.abort();
+          } catch {
+            /* ignore */
+          }
+        }
+        teardown();
+        renderer.destroy();
+        return;
+      }
+      case "escape": {
+        if (addAbort) {
+          try {
+            addAbort.abort();
+          } catch {
+            /* ignore */
+          }
+          setStatus({ text: "add cancelled", tone: "warn" });
+          return;
+        }
+        if (editMode) {
+          cancelEdit();
+          setStatus({ text: "edit cancelled", tone: "info" });
+          return;
+        }
+        if (confirmation.kind !== "none") {
+          disarmConfirmation("confirm cancelled");
+          return;
+        }
+        if (helpVisible) {
+          helpVisible = false;
+          paintDetail();
+          return;
+        }
+        return;
+      }
+      case "tab-xai":
+        switchTab("xai");
+        return;
+      case "tab-codex":
+        switchTab("codex");
+        return;
+      case "tab-next":
+        switchTab(nextTab(activeTab));
+        return;
+      case "toggle-locale": {
+        const next = toggleLocale(true);
+        setStatus({
+          key: "lang_switched",
+          text: tr("lang_switched"),
+          tone: "ok",
+        });
+        void next;
+        refreshViews();
+        return;
+      }
+      case "help": {
+        helpVisible = !helpVisible;
+        paintDetail();
+        return;
+      }
+      case "switch": {
+        await withBusy(async () => {
+          const acc = selectedAccount();
+          if (!acc) return;
+          await view().switchTo(acc.accountId);
+          setStatus({
+            text: `Active ${TAB_LABELS[activeTab]}: ${accountDisplayName(acc)}`,
+            tone: "ok",
+          });
+          refreshViews();
+        });
+        return;
+      }
+      case "prio-up":
+      case "prio-down": {
+        await withBusy(async () => {
+          const acc = selectedAccount();
+          if (!acc) return;
+          const id = acc.accountId;
+          await view().movePriority(
+            id,
+            action === "prio-up" ? "up" : "down",
+          );
+          restoreSelectionById(activeTab, id);
+          setStatus({ text: `priority ${action === "prio-up" ? "up" : "down"}`, tone: "ok" });
+          refreshViews();
+        });
+        return;
+      }
+      case "prio-top": {
+        await withBusy(async () => {
+          const acc = selectedAccount();
+          if (!acc) return;
+          const id = acc.accountId;
+          await view().moveToFront(id);
+          restoreSelectionById(activeTab, id);
+          setStatus({ text: "priority top", tone: "ok" });
+          refreshViews();
+        });
+        return;
+      }
+      case "enable":
+      case "disable": {
+        await withBusy(async () => {
+          const acc = selectedAccount();
+          if (!acc) return;
+          await view().setEnabled(acc.accountId, action === "enable");
+          setStatus({
+            text: action === "enable" ? "enabled" : "disabled",
+            tone: "ok",
+          });
+          refreshViews();
+        });
+        return;
+      }
+      case "label":
+        beginEdit("label");
+        return;
+      case "tags":
+        beginEdit("tags");
+        return;
+      case "note":
+        beginEdit("note");
+        return;
+      case "flag":
+      case "unflag": {
+        await withBusy(async () => {
+          const acc = selectedAccount();
+          if (!acc) return;
+          await view().setFlaggedForRemoval(
+            acc.accountId,
+            action === "flag",
+          );
+          setStatus({
+            text: action === "flag" ? "flagged" : "unflagged",
+            tone: "ok",
+          });
+          refreshViews();
+        });
+        return;
+      }
+      case "remove": {
+        await withBusy(async () => {
+          const acc = selectedAccount();
+          if (!acc) {
+            setStatus({ text: "no account selected", tone: "warn" });
+            return;
+          }
+          const r = advanceConfirmation(confirmation, "remove", {
+            provider: activeTab,
+            accountId: acc.accountId,
+          });
+          confirmation = r.next;
+          if (!r.confirmed) {
+            setStatus({
+              text: "press x again to remove",
+              tone: "warn",
+            });
+            return;
+          }
+          const id = acc.accountId;
+          await view().remove(id);
+          restoreSelectionById(activeTab, undefined);
+          setStatus({ text: `removed ${shortAccountId(id)}`, tone: "ok" });
+          refreshViews();
+        });
+        return;
+      }
+      case "prune": {
+        await withBusy(async () => {
+          const r = advanceConfirmation(confirmation, "prune", {
+            provider: activeTab,
+          });
+          confirmation = r.next;
+          if (!r.confirmed) {
+            const n = view().prunableAccounts().length;
+            if (n === 0) {
+              confirmation = clearConfirmation();
+              setStatus({ text: "nothing to prune", tone: "info" });
+              return;
+            }
+            setStatus({
+              text: `press p again to prune ${n}`,
+              tone: "warn",
+            });
+            return;
+          }
+          const ids = view()
+            .prunableAccounts()
+            .map((a) => a.accountId);
+          if (ids.length === 0) {
+            setStatus({ text: "nothing to prune", tone: "info" });
+            return;
+          }
+          const result = await view().pruneAccounts(ids);
+          setStatus({
+            text: `pruned ${result.removed.length}`,
+            tone: "ok",
+          });
+          restoreSelectionById(activeTab, selectedId());
+          refreshViews();
+        });
+        return;
+      }
+      case "refresh": {
+        await withBusy(async () => {
+          const acc = selectedAccount();
+          if (!acc) return;
+          const outcome = await probeAndRecord(activeTab, view(), acc);
+          setStatus({
+            text:
+              outcome === "success"
+                ? "refreshed"
+                : outcome === "partial"
+                  ? "partial refresh"
+                  : "refresh failed",
+            tone:
+              outcome === "success"
+                ? "ok"
+                : outcome === "partial"
+                  ? "warn"
+                  : "err",
+          });
+          refreshViews();
+        });
+        return;
+      }
+      case "refresh-all": {
+        await withBusy(async () => {
+          const tab = activeTab;
+          const v = manager.providerView(tab);
+          const snapshot = [...v.list()];
+          let ok = 0;
+          let fail = 0;
+          for (const acc of snapshot) {
+            if (!alive) break;
+            const outcome = await probeAndRecord(tab, v, acc);
+            if (outcome === "failure") fail++;
+            else ok++;
+          }
+          setStatus({
+            text: `refreshed ${ok}${fail ? ` · ${fail} failed` : ""}`,
+            tone: fail && ok ? "warn" : fail ? "err" : "ok",
+          });
+          if (tab === activeTab) refreshViews();
+        });
+        return;
+      }
+      case "toggle-live": {
+        liveEnabled = !liveEnabled;
+        if (liveEnabled) {
+          startLive();
+          setStatus({ key: "live_on", text: tr("live_on").trim(), tone: "ok" });
+        } else {
+          stopLive();
+          setStatus({
+            key: "live_off",
+            text: tr("live_off").trim(),
+            tone: "info",
+          });
+        }
+        statusText.content = styledHints(semanticStatus, liveEnabled, liveBusy);
+        return;
+      }
+      case "reload": {
+        await withBusy(async () => {
+          const keep = {
+            xai: manager.providerView("xai").list()[selection.xai!]?.accountId,
+            codex:
+              manager.providerView("codex").list()[selection.codex!]
+                ?.accountId,
+          };
+          gens = bumpGeneration(gens, "xai");
+          gens = bumpGeneration(gens, "codex");
+          await manager.reloadFromDisk();
+          restoreSelectionById("xai", keep.xai);
+          restoreSelectionById("codex", keep.codex);
+          setStatus({ text: "reloaded from disk", tone: "ok" });
+          refreshViews();
+        });
+        return;
+      }
+      case "add-device":
+        void startAdd("device");
+        return;
+      case "add-browser":
+        void startAdd("browser");
+        return;
+      default: {
+        const _exhaustive: never = action;
+        void _exhaustive;
+      }
+    }
+  }
+
+  async function startAdd(mode: "device" | "browser"): Promise<void> {
+    if (busy || addAbort) return;
+    const tab = activeTab;
+    const v = manager.providerView(tab);
+    const controller = new AbortController();
+    addAbort = controller;
+    helpVisible = false;
+    if (editMode) cancelEdit();
+    confirmation = clearConfirmation();
+    busy = true;
+    setStatus({
+      text: mode === "device" ? "device login…" : "browser login…",
+      tone: "info",
+    });
+
+    try {
+      let result: { accountId: string; email?: string; outcome: string };
+      const paintDevice = (
+        hue: string,
+        prompt: { verificationUri: string; userCode: string },
+      ) => {
+        setStatus({
+          text: `${prompt.verificationUri}  code ${prompt.userCode}`,
+          tone: "info",
+        });
+        detailText.content = t`${bold(fg(hue)("Device login"))}${fg(T.text)("\n\n")}${fg(T.label)("URL   ")}${fg(T.value)(prompt.verificationUri)}${fg(T.text)("\n")}${fg(T.label)("Code  ")}${bold(fg(T.ready)(prompt.userCode))}${fg(T.text)("\n\n")}${fg(T.textDim)("Esc cancels")}`;
+      };
+      const paintBrowser = (hue: string, url: string) => {
+        setStatus({ text: url, tone: "info" });
+        detailText.content = t`${bold(fg(hue)("Browser login"))}${fg(T.text)("\n\n")}${fg(T.label)("URL   ")}${fg(T.value)(url)}${fg(T.text)("\n\n")}${fg(T.textDim)("Esc cancels")}`;
+      };
+
+      if (tab === "xai") {
+        const inj = opts.login?.xai;
+        if (mode === "device") {
+          const fn =
+            inj?.deviceCodeLoginFlow ??
+            (await import("../providers/xai/auth/login.js"))
+              .deviceCodeLoginFlow;
+          result = await fn(
+            v,
+            (prompt) => paintDevice(T.xaiBright, prompt),
+            controller.signal,
+          );
+        } else {
+          const fn =
+            inj?.browserLogin ??
+            (await import("../providers/xai/auth/login.js")).browserLogin;
+          result = await fn(v, {
+            openBrowser: true,
+            signal: controller.signal,
+            onAuthorizeUrl: (url) => paintBrowser(T.xaiBright, url),
+          });
+        }
+      } else {
+        const inj = opts.login?.codex;
+        if (mode === "device") {
+          const fn =
+            inj?.deviceCodeLoginFlow ??
+            (await import("../providers/codex/auth/login.js"))
+              .deviceCodeLoginFlow;
+          result = await fn(
+            v,
+            (prompt) => paintDevice(T.codexBright, prompt),
+            controller.signal,
+          );
+        } else {
+          const fn =
+            inj?.browserLogin ??
+            (await import("../providers/codex/auth/login.js")).browserLogin;
+          result = await fn(v, {
+            openBrowser: true,
+            signal: controller.signal,
+            forceNewLogin: true,
+            onAuthorizeUrl: (url) => paintBrowser(T.codexBright, url),
+          });
+        }
+      }
+
+      if (tab === activeTab) {
+        restoreSelectionById(tab, result.accountId);
+      } else {
+        const list = manager.providerView(tab).list();
+        const idx = list.findIndex((a) => a.accountId === result.accountId);
+        selection = setSelectedForTab(
+          selection,
+          tab,
+          idx >= 0 ? idx : 0,
+          list.length,
+        );
+      }
+      setStatus({
+        text: `${result.outcome} ${shortAccountId(result.accountId)}`,
+        tone: "ok",
+      });
+      refreshViews();
+      // best-effort follow-up probe — never fails the add
+      try {
+        const acc = manager.providerView(tab).get(result.accountId);
+        if (acc) await probeAndRecord(tab, manager.providerView(tab), acc);
+        if (tab === activeTab) refreshViews();
+      } catch {
+        /* ignore probe after add */
+      }
+    } catch (err) {
+      const cancelled =
+        (err as { name?: string }).name === "LoginCancelledError" ||
+        (err as Error).message === "login cancelled" ||
+        controller.signal.aborted;
+      if (cancelled) {
+        setStatus({ text: "add cancelled", tone: "warn" });
+      } else {
+        setStatus({
+          text: `add failed: ${(err as Error).message}`,
+          tone: "err",
+        });
+      }
+      if (tab === activeTab) paintDetail();
+    } finally {
+      if (addAbort === controller) addAbort = null;
+      busy = false;
+    }
   }
 
   async function liveTickOnce(): Promise<void> {
-    if (!alive) return;
+    if (!alive || !liveEnabled) return;
     const tab = activeTab;
     const started = gens[tab]!;
     const v = manager.providerView(tab);
-    const ad = ADAPTERS[tab];
     const accounts = v.list();
-    if (accounts.length === 0 || !ad.probeQuota) return;
-
+    if (accounts.length === 0) return;
     const idx = selection[tab]!;
     const acc = accounts[idx];
     if (!acc) return;
 
+    liveBusy = true;
+    statusText.content = styledHints(semanticStatus, liveEnabled, liveBusy);
     try {
-      const tokens = await v.ensureFreshToken(acc.accountId);
-      if (isStaleResult(gens, tab, started) || !alive) return;
-      const orgId =
-        acc.provider === "codex" ? acc.organizationId : undefined;
-      await ad.probeQuota(tokens.accessToken, {
-        accountId: acc.accountId,
-        organizationId: orgId,
-      });
+      await probeAndRecord(tab, v, acc);
       if (isStaleResult(gens, tab, started) || !alive) return;
       if (tab === activeTab) refreshViews();
     } catch {
       // live probe is best-effort
+    } finally {
+      liveBusy = false;
+      if (alive) {
+        statusText.content = styledHints(semanticStatus, liveEnabled, liveBusy);
+      }
     }
   }
 
   function startLive(): void {
     stopLive();
-    if (!alive) return;
+    if (!alive || !liveEnabled) return;
     liveTimer = setInterval(() => {
       void liveTickOnce();
     }, 30_000);
@@ -921,42 +1795,75 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
       clearInterval(liveTimer);
       liveTimer = null;
     }
+    liveBusy = false;
   }
 
   renderer.keyInput.on("keypress", (key) => {
     if (!alive) return;
-    const name = (key.name ?? "").toLowerCase();
-    const seq = key.sequence ?? "";
+    const kev: TuiKeyEvent = {
+      name: key.name,
+      sequence: key.sequence,
+      shift: key.shift,
+      ctrl: key.ctrl,
+      eventType: (key as { eventType?: string }).eventType,
+      type: (key as { type?: string }).type,
+    };
 
-    if (name === "q" || (key.ctrl && name === "c")) {
-      teardown();
-      renderer.destroy();
+    // Ignore releases
+    const et = (kev.eventType ?? kev.type ?? "").toLowerCase();
+    if (et === "release" || et === "keyup") return;
+
+    // Edit mode: only Input handles typing; Esc cancels; Enter saves via Input event
+    if (editMode) {
+      const name = (kev.name ?? "").toLowerCase();
+      if (name === "escape" || kev.sequence === "\x1b") {
+        void runAction("escape");
+      }
+      // Let InputRenderable consume letters (q/a/r/L are text, not shortcuts)
       return;
     }
 
-    const fromDigit = tabFromKey(name) ?? tabFromKey(seq);
-    if (fromDigit) {
-      switchTab(fromDigit);
+    const action = decodeTuiAction(kev);
+
+    // Quit always
+    if (action === "quit") {
+      void runAction("quit");
       return;
     }
-    if (name === "tab") {
-      switchTab(nextTab(activeTab));
+
+    // Esc chain
+    if (action === "escape") {
+      void runAction("escape");
       return;
     }
-    if (name === "s") {
-      void switchSticky();
+
+    if (
+      busy &&
+      action &&
+      action !== "help" &&
+      action !== "toggle-locale" &&
+      action !== "tab-xai" &&
+      action !== "tab-codex" &&
+      action !== "tab-next"
+    ) {
       return;
     }
-    if (name === "r") {
-      void manager.reloadFromDisk().then(() => {
-        statusText.content = styledHints("Reloaded from disk");
-        refreshViews();
-      });
-      return;
+
+    if (action) {
+      if (
+        action !== "remove" &&
+        action !== "prune" &&
+        action !== "help" &&
+        confirmation.kind !== "none"
+      ) {
+        confirmation = clearConfirmation(confirmation);
+      }
+      void runAction(action);
     }
   });
 
   left.add(accountSelect);
+  left.add(editInput);
   right.add(detailText);
 
   const body = new BoxRenderable(renderer, {
