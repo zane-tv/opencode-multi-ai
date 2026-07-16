@@ -946,6 +946,35 @@ const hasOpenTuiFfi = typeof (globalThis as { Bun?: unknown }).Bun !== "undefine
     expect(manager.providerView("xai").get("added-once")).toBeTruthy();
   });
 
+  it("deferred live result after tab switch cannot repaint new tab", async () => {
+    harness = await launchTui({ storePath, settingsPath });
+    const { manager, setup } = harness;
+    const s = setup();
+    let resolveProbe!: (v: Record<string, unknown>) => void;
+    const gate = new Promise<Record<string, unknown>>((r) => {
+      resolveProbe = r;
+    });
+    probeXai.mockImplementation(async () => gate);
+    probeCodex.mockClear();
+    // trigger refresh on xai then switch tab before it resolves
+    s.mockInput.pressKey("r");
+    await s.renderOnce();
+    s.mockInput.pressKey("2");
+    await s.renderOnce();
+    resolveProbe({
+      billing: {
+        monthlyUsedPercent: 1,
+        remainingPercent: 99,
+        observedAt: Date.now(),
+      },
+      plan: { planName: "late", observedAt: Date.now() },
+    });
+    await new Promise((r) => setTimeout(r, 120));
+    // codex should not have been probed; xai may record but active tab is codex
+    expect(probeCodex).not.toHaveBeenCalled();
+    expect(manager.providerView("codex").list().length).toBe(2);
+  });
+
   it("q during add aborts + teardown safe", async () => {
     harness = await launchTui({ storePath, settingsPath });
     const { setup, done } = harness;
