@@ -3,6 +3,14 @@
   "version": "0.1.0",
   "description": "OpenCode multi-account plugin unifying SuperGrok (xai-multi) and ChatGPT/Codex (codex-multi) with tabbed TUI.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zane-tv/opencode-multi-ai.git"
+  },
+  "homepage": "https://github.com/zane-tv/opencode-multi-ai#readme",
+  "bugs": {
+    "url": "https://github.com/zane-tv/opencode-multi-ai/issues"
+  },
   "type": "module",
   "engines": {
     "node": ">=18"

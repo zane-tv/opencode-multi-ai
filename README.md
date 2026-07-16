@@ -15,9 +15,11 @@ OpenCode multi-account plugin for **SuperGrok (xAI)** and **ChatGPT / Codex** in
 | | |
 | --- | --- |
 | Unified CLI | `op-ai` (tabbed TUI default) |
+| Default TUI tab | **Codex** (`op-ai tui`; override with `--provider xai` or `op-xai tui`) |
 | UI language | English default; Vietnamese via `--lang vi` / `g` in TUI |
 | Package | `opencode-multi-ai` |
 | Account store | `~/.config/opencode/multi-ai-accounts.json` (v2, both providers) |
+| Repo | [zane-tv/opencode-multi-ai](https://github.com/zane-tv/opencode-multi-ai) |
 
 ## Features
 
@@ -27,7 +29,10 @@ OpenCode multi-account plugin for **SuperGrok (xAI)** and **ChatGPT / Codex** in
 - **OAuth add** from OpenCode, CLI, or TUI (device code recommended)
 - **xAI:** plan, billing credits %, rate-limit headers  
   **Codex:** primary/secondary usage windows, plan type, reset times
-- **Tabbed OpenTUI** (`op-ai tui`) — switch providers without leaving the manager
+- **Tabbed OpenTUI** (`op-ai tui`) — Codex tab first; switch providers without leaving the manager
+- **Full action menu** — provider-scoped account actions in their own bordered pane
+- **Mouse support** — click accounts and action rows
+- **VI + EN locale** — toggle with `g` (persisted in settings)
 - **Migration** from legacy `opencode-multi-xai` / `opencode-multi-codex` account files
 - Quiet logs; models.dev network sync only after successful login
 
@@ -41,29 +46,26 @@ OpenCode multi-account plugin for **SuperGrok (xAI)** and **ChatGPT / Codex** in
 
 ### Quick install (one command)
 
-Set the remote first if you use curl (placeholder until published):
-
 ```bash
-export MULTI_AI_REPO_URL="https://github.com/<owner>/opencode-multi-ai.git"
-curl -fsSL https://raw.githubusercontent.com/<owner>/opencode-multi-ai/main/install.sh | bash -s -- --path
+curl -fsSL https://raw.githubusercontent.com/zane-tv/opencode-multi-ai/main/install.sh | bash -s -- --path
 ```
 
 Also useful:
 
 ```bash
 # CLI only
-curl -fsSL …/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/zane-tv/opencode-multi-ai/main/install.sh | bash
 
 # + wire OpenCode dual providers/plugins
-curl -fsSL …/install.sh | bash -s -- --path --with-plugin
+curl -fsSL https://raw.githubusercontent.com/zane-tv/opencode-multi-ai/main/install.sh | bash -s -- --path --with-plugin
 
 # reinstall / update
-curl -fsSL …/install.sh | bash -s -- --path --force
+curl -fsSL https://raw.githubusercontent.com/zane-tv/opencode-multi-ai/main/install.sh | bash -s -- --path --force
 ```
 
 What it does:
 
-1. Clones/updates to `~/.local/share/opencode-multi-ai` (override: `MULTI_AI_HOME`, falls back to `MULTI_XAI_HOME` / `MULTI_CODEX_HOME`)
+1. Clones/updates to `~/.local/share/opencode-multi-ai` (override: `MULTI_AI_HOME`)
 2. Installs dependencies
 3. Installs **global CLI** shims into `~/.local/bin` (`MULTI_AI_BIN_DIR`)
 4. With `--path`, ensures `~/.local/bin` is on your shell PATH
@@ -72,7 +74,7 @@ What it does:
 Then **from any directory**:
 
 ```bash
-op-ai tui
+op-ai tui                 # opens on Codex tab
 op-ai list
 op-xai list
 op-codex list
@@ -94,7 +96,7 @@ Open a **new terminal** after `--path`, or `source ~/.zshrc`.
 ### Install from a local clone
 
 ```bash
-git clone <your-remote>/opencode-multi-ai.git
+git clone https://github.com/zane-tv/opencode-multi-ai.git
 cd opencode-multi-ai
 ./install.sh --path
 # or: npm run setup
@@ -187,15 +189,40 @@ npm run cli -- list
 ### Via CLI / TUI
 
 ```bash
-op-ai tui                    # tabs: xAI | Codex
+op-ai tui                    # default tab: Codex
+op-ai tui --provider xai     # start on xAI
 op-ai add --provider xai
 op-ai add --provider codex
-op-xai add                  # forced xAI
-op-codex add                # forced Codex
+op-xai add                   # forced xAI
+op-codex add                 # forced Codex
 op-codex import --file ~/.codex/auth.json   # OAuth blob import (Codex)
 ```
 
 OAuth only — no raw API-key paste into the multi pool.
+
+## TUI (`op-ai tui`)
+
+Layout: **tab bar** → **account list** → **action menu** (own bordered box) → status / footer.
+
+| Input | Action |
+| --- | --- |
+| `Tab` / `1` / `2` | Next tab / xAI / Codex |
+| `↑` `↓` or mouse | Select account or action row |
+| `s` | Make sticky (active) |
+| `a` / `A` / `+` | Add (device) / add (browser) |
+| `e` / `d` | Enable / disable |
+| `[` / `]` / `{` | Priority up / down / top |
+| `l` / `t` / `n` | Label / tags / note |
+| `f` / `u` | Flag / unflag for prune |
+| `x` / `p` | Remove (confirm) / prune (confirm) |
+| `r` / `R` | Refresh selected / refresh all |
+| `v` | Toggle live quota probe |
+| `L` | Reload pool from disk |
+| `g` | Toggle language (EN ↔ VI) |
+| `?` | Help |
+| `q` / `Esc` | Quit / cancel |
+
+Default tab is **Codex**. `op-xai tui` / `op-codex tui` force that provider; `op-ai tui --provider xai|codex` overrides.
 
 ## Everyday commands
 

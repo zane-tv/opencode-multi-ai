@@ -853,7 +853,7 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
     });
   await manager.load();
 
-  let activeTab: TuiTab = opts.initialTab ?? "xai";
+  let activeTab: TuiTab = opts.initialTab ?? "codex";
   let selection: TabSelectionState = createTabSelection({
     xai: stickyIndex(manager.providerView("xai")),
     codex: stickyIndex(manager.providerView("codex")),

@@ -364,7 +364,7 @@ async function main(): Promise<void> {
     }
     const { runTui } = await import("../lib/tui/app.js");
     await runTui({
-      initialTab: provider ?? forced ?? "xai",
+      initialTab: provider ?? forced ?? "codex",
       manager: createManager(),
     });
     return;

@@ -11,8 +11,7 @@
 #
 set -euo pipefail
 
-# Repo URL is a placeholder until the remote is published. Override with MULTI_AI_REPO_URL.
-REPO_URL="${MULTI_AI_REPO_URL:-${MULTI_XAI_REPO_URL:-${MULTI_CODEX_REPO_URL:-https://github.com/<owner>/opencode-multi-ai.git}}}"
+REPO_URL="${MULTI_AI_REPO_URL:-${MULTI_XAI_REPO_URL:-${MULTI_CODEX_REPO_URL:-https://github.com/zane-tv/opencode-multi-ai.git}}}"
 REPO_REF="${MULTI_AI_REPO_REF:-${MULTI_XAI_REPO_REF:-${MULTI_CODEX_REPO_REF:-main}}}"
 # Default install location when using curl | bash
 DEFAULT_ROOT="${MULTI_AI_HOME:-${MULTI_XAI_HOME:-${MULTI_CODEX_HOME:-$HOME/.local/share/opencode-multi-ai}}}"
@@ -33,7 +32,7 @@ for arg in "$@"; do
 opencode-multi-ai install
 
 One command (recommended):
-  curl -fsSL https://raw.githubusercontent.com/<owner>/opencode-multi-ai/main/install.sh | bash -s -- --path
+  curl -fsSL https://raw.githubusercontent.com/zane-tv/opencode-multi-ai/main/install.sh | bash -s -- --path
 
 Options:
   --path           Ensure ~/.local/bin is on PATH (shell rc)
