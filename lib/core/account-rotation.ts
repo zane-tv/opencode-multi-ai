@@ -109,3 +109,53 @@ export function toRotationManager(
     },
   };
 }
+
+/** Full-account manager shape required by Kiro AWS SDK custom fetch. */
+export type KiroFetchManager = {
+  selectAccount(
+    provider: ProviderKind,
+    attempted: Set<string>,
+    policy?: import("./schemas.js").AccountSelectionStrategy,
+  ): AccountMetadata | null;
+  ensureFreshToken: RotationManager["ensureFreshToken"];
+  markQuotaExhausted: RotationManager["markQuotaExhausted"];
+  markEntitlementBlocked: RotationManager["markEntitlementBlocked"];
+  recordCooldown: RotationManager["recordCooldown"];
+  markDeadCandidate: RotationManager["markDeadCandidate"];
+  touchLastUsed: RotationManager["touchLastUsed"];
+  list(provider: ProviderKind): AccountMetadata[];
+  get(provider: ProviderKind, id: string): AccountMetadata | undefined;
+  recordKiroUsage(
+    provider: ProviderKind,
+    id: string,
+    snap: {
+      usedCount?: number;
+      limitCount?: number;
+      email?: string;
+      observedAt?: number;
+    },
+  ): Promise<void>;
+};
+
+/**
+ * Bridge AccountManager for Kiro custom fetch. Unlike toRotationManager,
+ * list/get keep full rows (authMethod, region, profileArn, secrets).
+ */
+export function toKiroFetchManager(manager: AccountManager): KiroFetchManager {
+  return {
+    selectAccount: (p, attempted, policy) =>
+      manager.selectAccount(p, attempted, policy),
+    ensureFreshToken: (p, id, force) => manager.ensureFreshToken(p, id, force),
+    markQuotaExhausted: (p, id, resetAt) =>
+      manager.markQuotaExhausted(p, id, resetAt),
+    markEntitlementBlocked: (p, id) =>
+      manager.markEntitlementBlocked(p, id),
+    recordCooldown: (p, id, reason, until) =>
+      manager.recordCooldown(p, id, reason, until),
+    markDeadCandidate: (p, id) => manager.markDeadCandidate(p, id),
+    touchLastUsed: (p, id) => manager.touchLastUsed(p, id),
+    list: (p) => manager.list(p),
+    get: (p, id) => manager.get(p, id),
+    recordKiroUsage: (p, id, snap) => manager.recordKiroUsage(p, id, snap),
+  };
+}

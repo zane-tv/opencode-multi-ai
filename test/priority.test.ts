@@ -84,7 +84,7 @@ describe.each(PROVIDER_CASES)(
 
     it("sorts higher priority first and move up/down works", async () => {
       const storage: AccountStorage = {
-        version: 2,
+        version: 3,
         accounts: [
           makeAccount(provider, "a", 0, 1),
           makeAccount(provider, "b", 0, 2),
@@ -116,7 +116,7 @@ describe.each(PROVIDER_CASES)(
 
     it("selectAccount prefers sticky then the first priority-sorted account", async () => {
       const storage: AccountStorage = {
-        version: 2,
+        version: 3,
         accounts: [
           makeAccount(provider, "low", 0, 1),
           makeAccount(provider, "high", 10, 2),
@@ -138,7 +138,7 @@ describe.each(PROVIDER_CASES)(
 
     it("quota exhaustion demotes an account so rotation prefers others", async () => {
       const storage: AccountStorage = {
-        version: 2,
+        version: 3,
         accounts: [
           makeAccount(provider, "a", 10, 1),
           makeAccount(provider, "b", 5, 2),
@@ -161,6 +161,40 @@ describe.each(PROVIDER_CASES)(
         "a",
       ]);
       expect(manager.selectAccount(provider, new Set())?.accountId).toBe("b");
+    });
+
+    it("dead accounts sink below ready accounts and cleanDead removes them", async () => {
+      const storage: AccountStorage = {
+        version: 3,
+        accounts: [
+          makeAccount(provider, "alive", 10, 1),
+          makeAccount(provider, "dead-high", 100, 2),
+          makeAccount(provider, "alive2", 5, 3),
+        ],
+        sticky: stickyFor(provider, "dead-high"),
+      };
+      await saveAccounts(storage, storePath);
+      const manager = new AccountManager(storePath);
+      await manager.load();
+
+      await manager.markDeadCandidate(provider, "dead-high");
+      expect(manager.list(provider).map((a) => a.accountId)).toEqual([
+        "alive",
+        "alive2",
+        "dead-high",
+      ]);
+      expect(manager.selectAccount(provider, new Set())?.accountId).toBe(
+        "alive",
+      );
+
+      const dry = manager.deadAccounts(provider);
+      expect(dry.map((a) => a.accountId)).toEqual(["dead-high"]);
+      const { removed } = await manager.cleanDeadAccounts(provider);
+      expect(removed).toEqual(["dead-high"]);
+      expect(manager.list(provider).map((a) => a.accountId)).toEqual([
+        "alive",
+        "alive2",
+      ]);
     });
   },
 );

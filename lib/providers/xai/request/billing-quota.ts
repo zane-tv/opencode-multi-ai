@@ -149,14 +149,17 @@ export function parseGrpcWebBillingResponse(
       .map((r) => r.dateMs)
       .sort((a, b) => a - b)[0];
 
-  const hasLocalResetMarker = varints.some(
-    (f) => f.path.length >= 2 && f.path[0] === 1 && f.path[1] === 6,
+  const hasCreditsShape = varints.some(
+    (f) =>
+      f.path.length >= 2 &&
+      f.path[0] === 1 &&
+      (f.path[1] === 6 || f.path[1] === 8 || f.path[1] === 5),
   );
 
   let monthlyUsedPercent: number | undefined;
   if (orderedUsage[0]) {
     monthlyUsedPercent = orderedUsage[0].value;
-  } else if (fixed32.length === 0 && resetsAtMs !== undefined && hasLocalResetMarker) {
+  } else if (fixed32.length === 0 && resetsAtMs !== undefined && hasCreditsShape) {
     monthlyUsedPercent = 0;
   }
 

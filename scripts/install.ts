@@ -1,10 +1,11 @@
 /**
- * Dual-provider installer for opencode-multi-ai.
+ * Multi-provider installer for opencode-multi-ai.
  *
- * Writes BOTH OpenCode provider entries (`xai-multi` + `codex-multi`) into the
- * user's global `opencode.json`, optionally registers BOTH plugin modules, and
- * replaces legacy single-package plugin entries (`opencode-multi-xai` /
- * `opencode-multi-codex`). Never touches built-in `xai` / `openai` providers.
+ * Writes OpenCode provider entries (`xai-multi` + `codex-multi` + `kiro-multi`)
+ * into the user's global `opencode.json`, optionally registers the package-root
+ * plugin, and replaces legacy single-package plugin entries
+ * (`opencode-multi-xai` / `opencode-multi-codex` / standalone kiro auth).
+ * Never touches built-in `xai` / `openai` providers.
  *
  * Run:
  *   bun scripts/install.ts
@@ -33,6 +34,12 @@ import {
   resolveCodexMultiModels,
 } from "../lib/providers/codex/models-sync.js";
 import {
+  DUMMY_API_KEY as KIRO_DUMMY_API_KEY,
+  KIRO_BASE_URL,
+  PROVIDER_ID as KIRO_PROVIDER_ID,
+} from "../lib/providers/kiro/constants.js";
+import { resolveKiroMultiModels } from "../lib/providers/kiro/models-sync.js";
+import {
   DEFAULT_MODELS as XAI_DEFAULT_MODELS,
   PROVIDER_ID as XAI_PROVIDER_ID,
   XAI_API_BASE,
@@ -46,6 +53,8 @@ export const PLUGIN_PACKAGE = "opencode-multi-ai";
 export const LEGACY_PLUGIN_PACKAGES = [
   "opencode-multi-xai",
   "opencode-multi-codex",
+  "opencode-kiro-auth",
+  "@zhafron/opencode-kiro-auth",
 ] as const;
 
 /** Built-in provider ids we must never write or overwrite. */
@@ -55,6 +64,8 @@ const XAI_PROVIDER_NPM = "@ai-sdk/xai";
 const XAI_PROVIDER_NAME = "Grok Multi-Account";
 const CODEX_PROVIDER_NPM = "@ai-sdk/openai";
 const CODEX_PROVIDER_NAME = "Codex Multi-Account";
+const KIRO_PROVIDER_NPM = "@ai-sdk/openai-compatible";
+const KIRO_PROVIDER_NAME = "Kiro Multi-Account";
 
 const CONFIG_SCHEMA = "https://opencode.ai/config.json";
 
@@ -63,7 +74,6 @@ export function packageRoot(): string {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 }
 
-/** Single package-root path; loads both providers via named exports in index.ts. */
 export function defaultPluginEntries(root: string = packageRoot()): string[] {
   return [root];
 }
@@ -72,6 +82,7 @@ export function defaultPluginEntries(root: string = packageRoot()): string[] {
 export const PLUGIN_PACKAGE_SUBPATHS = [
   `${PLUGIN_PACKAGE}/lib/plugin/xai`,
   `${PLUGIN_PACKAGE}/lib/plugin/codex`,
+  `${PLUGIN_PACKAGE}/lib/plugin/kiro`,
 ] as const;
 
 export interface ProviderChange {
@@ -195,7 +206,12 @@ export function isOurPluginKey(key: string, desired: string[] = []): boolean {
   if (n.includes(`/${PLUGIN_PACKAGE}/lib/plugin/`)) return true;
   if (key.includes(`${path.sep}lib${path.sep}plugin${path.sep}xai`)) return true;
   if (key.includes(`${path.sep}lib${path.sep}plugin${path.sep}codex`)) return true;
-  if (key.includes("/lib/plugin/xai") || key.includes("/lib/plugin/codex")) {
+  if (key.includes(`${path.sep}lib${path.sep}plugin${path.sep}kiro`)) return true;
+  if (
+    key.includes("/lib/plugin/xai") ||
+    key.includes("/lib/plugin/codex") ||
+    key.includes("/lib/plugin/kiro")
+  ) {
     return true;
   }
   return false;
@@ -286,13 +302,17 @@ function pathsReferToSamePlugin(a: string, b: string): boolean {
   const na = norm(a);
   const nb = norm(b);
   if (na === nb) return true;
+  // Any multi-ai entry (root, package name, or dual module path) is the same install target.
   if (isOurPluginKey(a) && isOurPluginKey(b)) return true;
   const aXai = na.includes("plugin/xai") || na.endsWith("/xai");
   const bXai = nb.includes("plugin/xai") || nb.endsWith("/xai");
   const aCodex = na.includes("plugin/codex") || na.endsWith("/codex");
   const bCodex = nb.includes("plugin/codex") || nb.endsWith("/codex");
+  const aKiro = na.includes("plugin/kiro") || na.endsWith("/kiro");
+  const bKiro = nb.includes("plugin/kiro") || nb.endsWith("/kiro");
   if (aXai && bXai) return true;
   if (aCodex && bCodex) return true;
+  if (aKiro && bKiro) return true;
   return false;
 }
 
@@ -437,6 +457,68 @@ async function mergeCodexProvider(
   return { id: CODEX_PROVIDER_ID, added, updated };
 }
 
+async function mergeKiroProvider(
+  config: Record<string, unknown>,
+): Promise<ProviderChange> {
+  if (!isPlainObject(config.provider)) {
+    config.provider = {};
+  }
+  const provider = config.provider as Record<string, unknown>;
+
+  const existing = isPlainObject(provider[KIRO_PROVIDER_ID])
+    ? (provider[KIRO_PROVIDER_ID] as Record<string, unknown>)
+    : undefined;
+
+  const added = existing === undefined;
+  let updated = false;
+  const entry: Record<string, unknown> = { ...(existing ?? {}) };
+
+  if (entry.npm === undefined) {
+    entry.npm = KIRO_PROVIDER_NPM;
+    if (!added) updated = true;
+  }
+  if (entry.name === undefined) {
+    entry.name = KIRO_PROVIDER_NAME;
+    if (!added) updated = true;
+  }
+
+  const options = isPlainObject(entry.options)
+    ? { ...(entry.options as Record<string, unknown>) }
+    : {};
+  if (options.baseURL === undefined) {
+    options.baseURL = KIRO_BASE_URL;
+    if (!added) updated = true;
+  }
+  if (
+    options.apiKey === undefined ||
+    options.apiKey === null ||
+    options.apiKey === ""
+  ) {
+    options.apiKey = KIRO_DUMMY_API_KEY;
+    if (!added) updated = true;
+  }
+  if (options.accountSelectionStrategy === undefined) {
+    options.accountSelectionStrategy = "sticky";
+    if (!added) updated = true;
+  }
+  entry.options = options;
+
+  const prevModels = isPlainObject(entry.models)
+    ? (entry.models as Record<string, unknown>)
+    : {};
+  const nextModels = await resolveKiroMultiModels({
+    allowNetwork: false,
+    userModels: prevModels,
+  });
+  if (JSON.stringify(prevModels) !== JSON.stringify(nextModels)) {
+    if (!added) updated = true;
+  }
+  entry.models = nextModels;
+
+  provider[KIRO_PROVIDER_ID] = entry;
+  return { id: KIRO_PROVIDER_ID, added, updated };
+}
+
 async function maybeBackup(
   configPath: string,
   raw: string | null,
@@ -460,7 +542,7 @@ async function maybeBackup(
 }
 
 /**
- * Write dual provider config (+ optional dual plugin entries) into opencode.json.
+ * Write multi-provider config (+ optional plugin entries) into opencode.json.
  */
 export async function installProvider(
   configPath: string = defaultConfigPath(),
@@ -475,6 +557,7 @@ export async function installProvider(
 
   const xai = await mergeXaiProvider(config);
   const codex = await mergeCodexProvider(config);
+  const kiro = await mergeKiroProvider(config);
 
   // Guard: never write built-in keys as our multi providers.
   if (isPlainObject(config.provider)) {
@@ -528,7 +611,7 @@ export async function installProvider(
     created,
     backedUp,
     backupPath,
-    providers: [xai, codex],
+    providers: [xai, codex, kiro],
     pluginEntriesAdded,
     legacyPluginsRemoved,
     config,
@@ -547,7 +630,7 @@ function printSummary(result: InstallResult): void {
     config,
   } = result;
 
-  console.log("multi-ai dual-provider installer");
+  console.log("multi-ai provider installer");
   console.log("─".repeat(56));
   console.log(`config: ${configPath}`);
   console.log(created ? "  created a new config file" : "  updated existing config");
@@ -584,9 +667,9 @@ function printSummary(result: InstallResult): void {
 
   console.log("─".repeat(56));
   console.log(
-    "Done. Restart OpenCode, then `opencode auth login` for xai-multi and/or codex-multi.",
+    "Done. Restart OpenCode, then `opencode auth login` for xai-multi / codex-multi / kiro-multi.",
   );
-  console.log("CLI: op-ai tui | op-xai list | op-codex list");
+  console.log("CLI: op-ai tui | op-xai list | op-codex list | op-kiro list");
 }
 
 function parseArgs(argv: string[]): {

@@ -103,6 +103,31 @@ describe("parseGrpcWebBillingResponse", () => {
     expect(parsed.monthlyUsedPercent).toBe(0);
     expect(parsed.remainingPercent).toBe(100);
   });
+
+  it("uses 0% when credit_usage_percent omitted but current_period present", () => {
+    // Live SuperGrok Heavy / Premium+ shape: period timestamps only, no fixed32.
+    const periodStart = 1_784_128_107;
+    const periodEnd = 1_784_732_907;
+    const period = concat(
+      varintField(1, 2),
+      lengthDelimitedField(2, varintField(1, periodStart)),
+      lengthDelimitedField(3, varintField(1, periodEnd)),
+    );
+    const inner = concat(
+      lengthDelimitedField(4, varintField(1, periodStart)),
+      lengthDelimitedField(5, varintField(1, periodEnd)),
+      lengthDelimitedField(8, period),
+      varintField(11, 1),
+      varintField(13, 1),
+    );
+    const parsed = parseGrpcWebBillingResponse(
+      grpcWebFrame(lengthDelimitedField(1, inner)),
+      1_784_200_000 * 1000,
+    );
+    expect(parsed.monthlyUsedPercent).toBe(0);
+    expect(parsed.remainingPercent).toBe(100);
+    expect(parsed.resetsAtMs).toBe(periodEnd * 1000);
+  });
 });
 
 describe("fetchGrokBillingQuota", () => {

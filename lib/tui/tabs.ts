@@ -7,11 +7,12 @@ import type { ProviderKind } from "../core/schemas.js";
 
 export type TuiTab = ProviderKind;
 
-export const TUI_TABS: readonly TuiTab[] = ["xai", "codex"] as const;
+export const TUI_TABS: readonly TuiTab[] = ["codex", "xai", "kiro"] as const;
 
 export const TAB_LABELS: Record<TuiTab, string> = {
-  xai: "xAI",
   codex: "Codex",
+  xai: "xAI",
+  kiro: "Kiro",
 };
 
 export type TabSelectionState = Record<TuiTab, number>;
@@ -22,20 +23,26 @@ export function createTabSelection(
   return {
     xai: Math.max(0, initial.xai ?? 0),
     codex: Math.max(0, initial.codex ?? 0),
+    kiro: Math.max(0, initial.kiro ?? 0),
   };
 }
 
 export function nextTab(current: TuiTab): TuiTab {
-  return current === "xai" ? "codex" : "xai";
+  const i = TUI_TABS.indexOf(current);
+  if (i < 0) return TUI_TABS[0]!;
+  return TUI_TABS[(i + 1) % TUI_TABS.length]!;
 }
 
 export function prevTab(current: TuiTab): TuiTab {
-  return nextTab(current);
+  const i = TUI_TABS.indexOf(current);
+  if (i < 0) return TUI_TABS[0]!;
+  return TUI_TABS[(i - 1 + TUI_TABS.length) % TUI_TABS.length]!;
 }
 
 export function tabFromKey(key: string): TuiTab | undefined {
-  if (key === "1") return "xai";
-  if (key === "2") return "codex";
+  if (key === "1") return TUI_TABS[0];
+  if (key === "2") return TUI_TABS[1];
+  if (key === "3") return TUI_TABS[2];
   return undefined;
 }
 
@@ -80,7 +87,7 @@ export function renderTabBar(active: TuiTab): string {
 export type LiveGeneration = Record<TuiTab, number>;
 
 export function createLiveGeneration(): LiveGeneration {
-  return { xai: 0, codex: 0 };
+  return { xai: 0, codex: 0, kiro: 0 };
 }
 
 export function bumpGeneration(

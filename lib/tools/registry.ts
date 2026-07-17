@@ -41,15 +41,18 @@ import {
  * plugin loader (legacy path) may invoke every export of a plugin module as a
  * Plugin. Do not re-export this from plugin entry files.
  *
- * Each tool map is provider-scoped via `manager.providerView("xai"|"codex")`.
- * Tool names stay `xai-*` and `codex-*` (never mixed in one action).
+ * Each tool map is provider-scoped via `manager.providerView("xai"|"codex"|"kiro")`.
+ * Tool names stay `xai-*`, `codex-*`, and `kiro-*` (never mixed in one action).
  */
 
 const { schema } = tool;
 
-const MAX: Record<ProviderKind, number> = {
+const KIRO_MAX = 20;
+
+const MAX: Partial<Record<ProviderKind, number>> = {
   xai: XAI_MAX,
   codex: CODEX_MAX,
+  kiro: KIRO_MAX,
 };
 
 function identify(a: AccountMetadata): string {
@@ -123,6 +126,28 @@ function xaiSummaryLine(a: AccountMetadata): string {
   return `plan=${a.planName ?? (a.planTier !== undefined ? `tier ${a.planTier}` : "—")}`;
 }
 
+function kiroSummaryLine(a: AccountMetadata): string {
+  if (a.provider !== "kiro") return "";
+  const method = a.authMethod ?? "kiro";
+  const region = a.region ?? "—";
+  if (
+    typeof a.usedCount === "number" &&
+    typeof a.limitCount === "number" &&
+    a.limitCount > 0
+  ) {
+    const rem = Math.max(0, Math.round(100 - (a.usedCount / a.limitCount) * 100));
+    return `auth=${method}  region=${region}  ${rem}% left (${a.usedCount}/${a.limitCount})`;
+  }
+  return `auth=${method}  region=${region}`;
+}
+
+function providerSummaryLine(a: AccountMetadata): string {
+  if (a.provider === "codex") return usageSummaryLine(a);
+  if (a.provider === "xai") return xaiSummaryLine(a);
+  if (a.provider === "kiro") return kiroSummaryLine(a);
+  return "";
+}
+
 function renderList(
   view: ProviderAccountView,
   brand: string,
@@ -133,19 +158,20 @@ function renderList(
   const active = activeIndex(view);
   const now = Date.now();
   const lines = accounts.map((a, i) => {
-    const marker = i === active ? "*" : " ";
+    const isActive = i === active;
+    const marker = isActive ? "★" : " ";
     const who = accountDisplayName(a);
+    const activeTag = isActive ? " ★ ACTIVE" : "";
     const tags = a.tags.length > 0 ? ` [${a.tags.join(", ")}]` : "";
-    const summary =
-      a.provider === "codex" ? usageSummaryLine(a) : xaiSummaryLine(a);
+    const summary = providerSummaryLine(a);
     return (
-      `${marker} ${i}  ${who}${tags}\n` +
+      `${marker} ${i}  ${who}${activeTag}${tags}\n` +
       `     id=${shortId(a.accountId)}  ${summary}  sub=${a.subscriptionStatus}  ` +
       `state=${describeState(a, now)}`
     );
   });
   return (
-    `${brand} accounts (${accounts.length}/${MAX[view.provider]}) — * = active:\n` +
+    `${brand} accounts (${accounts.length}/${MAX[view.provider]}) — ★ = ACTIVE sticky:\n` +
     lines.join("\n")
   );
 }
@@ -176,7 +202,7 @@ function formatWindowLine(
 /** Shared mutating tools for one provider (list/status/switch/…/prune). */
 function buildSharedTools(
   view: ProviderAccountView,
-  prefix: "xai" | "codex",
+  prefix: ProviderKind,
   brand: string,
   emptyHint: string,
   addHelp: (n: number) => string,
@@ -226,19 +252,20 @@ function buildSharedTools(
         const now = Date.now();
         const lines = accounts.map((a) => {
           const i = all.findIndex((x) => x.accountId === a.accountId);
-          const marker = i === active ? "*" : " ";
+          const isActive = i === active;
+          const marker = isActive ? "★" : " ";
           const who = accountDisplayName(a);
+          const activeTag = isActive ? " ★ ACTIVE" : "";
           const tags = a.tags.length > 0 ? ` [${a.tags.join(", ")}]` : "";
-          const summary =
-            a.provider === "codex" ? usageSummaryLine(a) : xaiSummaryLine(a);
+          const summary = providerSummaryLine(a);
           return (
-            `${marker} ${i}  ${who}${tags}\n` +
+            `${marker} ${i}  ${who}${activeTag}${tags}\n` +
             `     id=${shortId(a.accountId)}  ${summary}  sub=${a.subscriptionStatus}  ` +
             `state=${describeState(a, now)}`
           );
         });
         return (
-          `${brand} accounts with tag "${tag}" (${accounts.length}):\n` +
+          `${brand} accounts with tag "${tag}" (${accounts.length}) — ★ = ACTIVE:\n` +
           lines.join("\n")
         );
       },
@@ -249,8 +276,11 @@ function buildSharedTools(
         prefix === "xai"
           ? "How to add another SuperGrok account to the pool. " +
             "Accounts are only created via SuperGrok OAuth (no raw token paste)."
-          : "How to add another ChatGPT/Codex account to the pool " +
-            "(OAuth device/browser, or JSON import like 9router / Codex auth.json).",
+          : prefix === "codex"
+            ? "How to add another ChatGPT/Codex account to the pool " +
+              "(OAuth device/browser, or JSON import like 9router / Codex auth.json)."
+            : "How to add another Kiro account to the pool " +
+              "(IDC device OAuth, API key ksk_*, JSON credentials, or kiro-cli DB import).",
       args: {},
       async execute() {
         return addHelp(view.list().length);
@@ -550,6 +580,45 @@ function buildSharedTools(
         );
       },
     }),
+
+    [`${prefix}-clean-dead`]: tool({
+      description:
+        `Remove only ${brand} accounts with subscriptionStatus=dead ` +
+        "(invalid_grant / terminated). Does NOT remove flagged-only or " +
+        "quota-exhausted accounts. DRY-RUN by default; pass dryRun=false to delete.",
+      args: {
+        dryRun: schema
+          .boolean()
+          .optional()
+          .describe(
+            "when true (the default), only report; pass false to actually delete",
+          ),
+      },
+      async execute(args) {
+        const dryRun = args.dryRun ?? true;
+        const targets = view.deadAccounts();
+        const total = view.list().length;
+        if (targets.length === 0) {
+          return `No dead ${brand} accounts to clean. (${total} account(s) in the pool.)`;
+        }
+        const listing = targets
+          .map((a) => `  - ${identify(a)}: dead (subscription terminated)`)
+          .join("\n");
+        if (dryRun) {
+          return (
+            `DRY RUN — would clean ${targets.length} dead account(s), ` +
+            `leaving ${total - targets.length}:\n${listing}\n` +
+            `Nothing was deleted. Re-run with dryRun=false to delete.`
+          );
+        }
+        const { removed } = await view.cleanDeadAccounts();
+        return (
+          `Cleaned ${removed.length} dead account(s), ` +
+          `${total - removed.length} remaining. Backup taken before deleting.\n` +
+          `${listing}`
+        );
+      },
+    }),
   };
 }
 
@@ -595,9 +664,11 @@ function buildXaiLimitsTool(view: ProviderAccountView): ToolDefinition {
 
       for (const a of accounts) {
         const i = all.findIndex((x) => x.accountId === a.accountId);
-        const marker = i === active ? "*" : " ";
+        const isActive = i === active;
+        const marker = isActive ? "★" : " ";
         const who = accountDisplayName(a);
-        lines.push(`${marker} [${i}] ${who}  id=${shortId(a.accountId)}`);
+        const activeTag = isActive ? " ★ ACTIVE" : "";
+        lines.push(`${marker} [${i}] ${who}${activeTag}  id=${shortId(a.accountId)}`);
         lines.push(`    enabled=${a.enabled}  sub=${a.subscriptionStatus}`);
         if (a.provider === "xai") {
           const plan =
@@ -815,9 +886,11 @@ function buildCodexLimitsTool(view: ProviderAccountView): ToolDefinition {
 
       for (const a of accounts) {
         const i = all.findIndex((x) => x.accountId === a.accountId);
-        const marker = i === active ? "*" : " ";
+        const isActive = i === active;
+        const marker = isActive ? "★" : " ";
         const who = accountDisplayName(a);
-        lines.push(`${marker} [${i}] ${who}  id=${shortId(a.accountId)}`);
+        const activeTag = isActive ? " ★ ACTIVE" : "";
+        lines.push(`${marker} [${i}] ${who}${activeTag}  id=${shortId(a.accountId)}`);
         lines.push(`    enabled=${a.enabled}  sub=${a.subscriptionStatus}`);
 
         if (doProbe) {
@@ -1031,13 +1104,293 @@ export function buildCodexTools(
   };
 }
 
-/** Both provider tool maps for dual plugin registration / CLI. */
+function buildKiroLimitsTool(view: ProviderAccountView): ToolDefinition {
+  return tool({
+    description:
+      "Show Kiro usage limits (used/limit) for accounts in the pool. " +
+      "Pass --probe to refresh from AWS getUsageLimits.",
+    args: {
+      probe: schema
+        .boolean()
+        .optional()
+        .describe("when true, refresh usage via getUsageLimits"),
+      index: schema.number().int().optional(),
+      id: schema.string().optional(),
+    },
+    async execute(args) {
+      const accounts = view.list();
+      if (accounts.length === 0) {
+        return "No Kiro accounts. Run `op-kiro add` (IDC device) or `op-kiro import`.";
+      }
+      const wantProbe = args.probe === true;
+      const lines: string[] = ["Kiro usage limits:"];
+      const targets =
+        args.index !== undefined || args.id
+          ? [resolveAccount(accounts, args)]
+          : accounts;
+      for (const a of targets) {
+        if (a.provider !== "kiro") continue;
+        let used = a.usedCount;
+        let limit = a.limitCount;
+        let email = a.email;
+        if (wantProbe) {
+          try {
+            const tokens = await view.ensureFreshToken(a.accountId);
+            const { fetchKiroUsageLimits } = await import(
+              "../providers/kiro/request/usage.js"
+            );
+            const snap = await fetchKiroUsageLimits(a, tokens.accessToken);
+            await view.recordKiroUsage(a.accountId, snap);
+            used = snap.usedCount ?? used;
+            limit = snap.limitCount ?? limit;
+            email = snap.email ?? email;
+          } catch (err) {
+            lines.push(
+              `  ${accountDisplayName(a)}  probe failed: ${(err as Error).message}`,
+            );
+            continue;
+          }
+        }
+        const who = accountDisplayName(a);
+        const usage =
+          typeof used === "number" && typeof limit === "number" && limit > 0
+            ? `${used}/${limit} (${Math.max(0, Math.round(100 - (used / limit) * 100))}% left)`
+            : "unknown";
+        lines.push(
+          `  ${who}  auth=${a.authMethod ?? "—"}  region=${a.region ?? "—"}  usage=${usage}` +
+            (email ? `  email=${email}` : ""),
+        );
+      }
+      lines.push("", "Tip: kiro-limits --probe refreshes used/limit from AWS.");
+      return lines.join("\n");
+    },
+  });
+}
+
+function buildKiroImportTool(view: ProviderAccountView): ToolDefinition {
+  return tool({
+    description:
+      "Import Kiro accounts from JSON credentials, API key (ksk_*), " +
+      "kiro-cli SQLite DB, or legacy plugin DB. Prefer --file over pasting secrets.",
+    args: {
+      file: schema.string().optional().describe("Path to JSON credentials file"),
+      json: schema.string().optional().describe("Raw JSON credentials"),
+      apiKey: schema
+        .string()
+        .optional()
+        .describe("Kiro API key starting with ksk_"),
+      region: schema.string().optional().describe("Region for api-key import"),
+      kiroCli: schema
+        .boolean()
+        .optional()
+        .describe("Import from default kiro-cli SQLite DB"),
+      kiroCliPath: schema
+        .string()
+        .optional()
+        .describe("Path to kiro-cli data.sqlite3"),
+      legacyDb: schema
+        .string()
+        .optional()
+        .describe("Path to legacy opencode-kiro-auth SQLite DB"),
+      exportJson: schema
+        .string()
+        .optional()
+        .describe("Kiro Account Manager export JSON text"),
+      skipValidate: schema
+        .boolean()
+        .optional()
+        .describe("Skip live refresh validation on JSON import"),
+    },
+    async execute(args) {
+      const results: string[] = [];
+      let ok = 0;
+      let failed = 0;
+      const upsert = async (
+        candidate: AccountMetadata,
+        label: string,
+      ): Promise<void> => {
+        try {
+          const outcome = await view.upsertFromOAuth(candidate);
+          ok++;
+          results.push(
+            `[ok] ${outcome} ${accountDisplayName(candidate)} (${label})`,
+          );
+        } catch (err) {
+          failed++;
+          results.push(`[fail] ${label}: ${(err as Error).message}`);
+        }
+      };
+
+      const apiKey =
+        typeof args.apiKey === "string" && args.apiKey.trim()
+          ? args.apiKey.trim()
+          : undefined;
+      const file =
+        typeof args.file === "string" && args.file.trim()
+          ? args.file.trim()
+          : undefined;
+      const json =
+        typeof args.json === "string" && args.json.trim()
+          ? args.json.trim()
+          : undefined;
+      const kiroCliPath =
+        typeof args.kiroCliPath === "string" && args.kiroCliPath.trim()
+          ? args.kiroCliPath.trim()
+          : undefined;
+      const legacyDb =
+        typeof args.legacyDb === "string" && args.legacyDb.trim()
+          ? args.legacyDb.trim()
+          : undefined;
+      const exportJson =
+        typeof args.exportJson === "string" && args.exportJson.trim()
+          ? args.exportJson.trim()
+          : undefined;
+      const wantKiroCli = args.kiroCli === true || Boolean(kiroCliPath);
+
+      if (
+        !apiKey &&
+        !file &&
+        !json &&
+        !exportJson &&
+        !wantKiroCli &&
+        !legacyDb
+      ) {
+        return [
+          "kiro-import needs one of: file, json, exportJson, apiKey, kiroCli, legacyDb.",
+          "",
+          "Examples:",
+          "  op-kiro import --file ./kiro-creds.json",
+          "  op-kiro import --api-key ksk_… --region us-east-1",
+          "  op-kiro import --export-json '{\"accounts\":[...]}'",
+          "  op-kiro import --kiro-cli",
+          "  op-kiro import --legacy-db ~/.config/opencode/kiro.db",
+        ].join("\n");
+      }
+
+      if (apiKey) {
+        const { buildApiKeyCandidate } = await import(
+          "../providers/kiro/auth/api-key.js"
+        );
+        const region =
+          typeof args.region === "string" ? args.region : undefined;
+        await upsert(buildApiKeyCandidate(apiKey, region), "api-key");
+      }
+
+      if (file || json) {
+        const { normalizeCredentialCandidates } = await import(
+          "../providers/kiro/auth/credentials-import.js"
+        );
+        try {
+          let payload: unknown;
+          if (file) {
+            const { readFile } = await import("node:fs/promises");
+            payload = JSON.parse(await readFile(file, "utf8"));
+          } else {
+            payload = JSON.parse(json!);
+          }
+          const candidates = await normalizeCredentialCandidates(payload);
+          for (const c of candidates) {
+            await upsert(c, "json");
+          }
+        } catch (err) {
+          failed++;
+          results.push(`[fail] json: ${(err as Error).message}`);
+        }
+      }
+
+      if (exportJson) {
+        const { importAccountManagerExport } = await import(
+          "../providers/kiro/auth/login.js"
+        );
+        try {
+          const candidates = await importAccountManagerExport(exportJson, {
+            validateRefresh: args.skipValidate !== true,
+          });
+          for (const c of candidates) await upsert(c, "export");
+        } catch (err) {
+          failed++;
+          results.push(`[fail] export: ${(err as Error).message}`);
+        }
+      }
+
+      if (wantKiroCli) {
+        const { readKiroCliCandidates, defaultKiroCliDbPath } = await import(
+          "../providers/kiro/auth/kiro-cli-import.js"
+        );
+        try {
+          const { candidates, warnings } = await readKiroCliCandidates(
+            kiroCliPath ?? defaultKiroCliDbPath(),
+          );
+          for (const w of warnings) results.push(`[warn] kiro-cli: ${w}`);
+          for (const c of candidates) await upsert(c, "kiro-cli");
+        } catch (err) {
+          failed++;
+          results.push(`[fail] kiro-cli: ${(err as Error).message}`);
+        }
+      }
+
+      if (legacyDb) {
+        const { readLegacyKiroDbCandidates } = await import(
+          "../providers/kiro/auth/legacy-db-import.js"
+        );
+        try {
+          const { candidates, warnings } =
+            await readLegacyKiroDbCandidates(legacyDb);
+          for (const w of warnings) results.push(`[warn] legacy-db: ${w}`);
+          for (const c of candidates) await upsert(c, "legacy-db");
+        } catch (err) {
+          failed++;
+          results.push(`[fail] legacy-db: ${(err as Error).message}`);
+        }
+      }
+
+      results.push("", `Import done · ${ok} ok · ${failed} failed`);
+      return results.join("\n");
+    },
+  });
+}
+
+export function buildKiroTools(
+  manager: AccountManager,
+): Record<string, ToolDefinition> {
+  const view = manager.providerView("kiro");
+  const shared = buildSharedTools(
+    view,
+    "kiro",
+    "Kiro",
+    "No Kiro accounts. Run `op-kiro add` (IDC device) or `op-kiro import`.",
+    (n) =>
+      [
+        `Add Kiro account (pool ${n}/${KIRO_MAX}):`,
+        "",
+        "Recommended:",
+        "  op-kiro tui            → press a  (IDC device OAuth inside TUI)",
+        "  op-kiro add            → IDC device OAuth in terminal",
+        "  op-kiro import --file ./creds.json",
+        "  op-kiro import --api-key ksk_…",
+        "  op-kiro import --kiro-cli",
+        "",
+        "Or via OpenCode:",
+        "  opencode auth login → kiro-multi",
+        "",
+        "Then: kiro-list / kiro-switch / kiro-label / kiro-health / kiro-limits",
+      ].join("\n"),
+  );
+  return {
+    ...shared,
+    "kiro-import": buildKiroImportTool(view),
+    "kiro-limits": buildKiroLimitsTool(view),
+  };
+}
+
 export function buildTools(manager: AccountManager): {
   xai: Record<string, ToolDefinition>;
   codex: Record<string, ToolDefinition>;
+  kiro: Record<string, ToolDefinition>;
   all: Record<string, ToolDefinition>;
 } {
   const xai = buildXaiTools(manager);
   const codex = buildCodexTools(manager);
-  return { xai, codex, all: { ...xai, ...codex } };
+  const kiro = buildKiroTools(manager);
+  return { xai, codex, kiro, all: { ...xai, ...codex, ...kiro } };
 }

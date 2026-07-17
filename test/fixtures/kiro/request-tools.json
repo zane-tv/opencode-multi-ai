@@ -1,0 +1,85 @@
+{
+  "conversationState": {
+    "chatTriggerType": "MANUAL",
+    "conversationId": "conversation-fixture",
+    "history": [
+      {
+        "userInputMessage": {
+          "content": "Use a tool",
+          "modelId": "claude-opus-4.8",
+          "origin": "AI_EDITOR"
+        }
+      },
+      {
+        "assistantResponseMessage": {
+          "content": "",
+          "toolUses": [
+            {
+              "name": "read_file",
+              "toolUseId": "call_1",
+              "input": {
+                "path": "a.ts"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "userInputMessage": {
+          "content": "Tool results provided.",
+          "modelId": "claude-opus-4.8",
+          "origin": "AI_EDITOR",
+          "userInputMessageContext": {
+            "toolResults": [
+              {
+                "content": [
+                  {
+                    "text": "contents"
+                  }
+                ],
+                "status": "success",
+                "toolUseId": "call_1"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "assistantResponseMessage": {
+          "content": "[system: conversation continues]"
+        }
+      }
+    ],
+    "currentMessage": {
+      "userInputMessage": {
+        "content": "Continue",
+        "modelId": "claude-opus-4.8",
+        "origin": "AI_EDITOR",
+        "userInputMessageContext": {
+          "tools": [
+            {
+              "toolSpecification": {
+                "name": "read_file",
+                "description": "Read a file",
+                "inputSchema": {
+                  "json": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "path"
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "profileArn": "arn:aws:codewhisperer:us-east-1:123:profile/demo"
+}

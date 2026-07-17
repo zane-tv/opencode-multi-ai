@@ -1,142 +1,112 @@
 # PROJECT KNOWLEDGE BASE
 
-**Generated:** 2026-07-15  
+**Generated:** 2026-07-17  
+**Commit:** d6fcc38  
+**Branch:** main  
 **Package:** opencode-multi-ai
 
 ## OVERVIEW
 
-OpenCode multi-account package unifying **SuperGrok (xAI)** and **ChatGPT/Codex** under one codebase:
+OpenCode multi-account package unifying **SuperGrok (xAI)**, **ChatGPT/Codex**, and **Kiro (AWS CodeWhisperer)** under one sticky-rotation pool, v3 storage, agent tools, and tabbed OpenTUI (`op-ai`). Ships TypeScript source (Bun/OpenCode load `.ts`; no `dist/`). One package-root plugin path loads all three via named exports.
 
-| Provider id | Plugin module | npm adapter | CLI force |
-| --- | --- | --- | --- |
-| `xai-multi` | `lib/plugin/xai.ts` | `@ai-sdk/xai` | `op-xai` |
-| `codex-multi` | `lib/plugin/codex.ts` | `@ai-sdk/openai` | `op-codex` |
-
-Shared core: sticky rotation, v2 unified storage, agent tools, tabbed OpenTUI (`op-ai`). OpenCode config uses **one package-root plugin path**; `index.ts` re-exports both PluginModules as named exports (`xai`, `codex`) so the legacy loader registers both. Ships TypeScript source (Bun/OpenCode load `.ts`; no `dist/`).
+| Provider id | Plugin | npm adapter | CLI force | Transport |
+| --- | --- | --- | --- | --- |
+| `xai-multi` | `lib/plugin/xai.ts` | `@ai-sdk/xai` | `op-xai` | host-pin + HTTP rotation-fetch |
+| `codex-multi` | `lib/plugin/codex.ts` | `@ai-sdk/openai` | `op-codex` | URL rewrite → chatgpt.com + HTTP rotation-fetch |
+| `kiro-multi` | `lib/plugin/kiro.ts` | `@ai-sdk/openai-compatible` | `op-kiro` | **custom** transport (`createKiroFetch` / CodeWhisperer SDK) |
 
 ## STRUCTURE
 
 ```
 opencode-multi-ai/
-├── index.ts                 # package root: named exports { xai, codex } (no default)
-├── install.sh               # curl|bash + local setup
+├── index.ts              # named { xai, codex, kiro } — NO default
+├── install.sh
 ├── lib/
-│   ├── core/                # accounts, storage, rotation-fetch, i18n, adapter types
-│   ├── providers/
-│   │   ├── xai/             # OAuth, classify, models, adapter
-│   │   └── codex/           # OAuth, rewrite, usage, adapter
-│   ├── plugin/
-│   │   ├── xai.ts           # PluginModule { id: xai-multi, server }
-│   │   └── codex.ts         # PluginModule { id: codex-multi, server }
-│   ├── tools/               # buildTools / buildXaiTools / buildCodexTools
-│   ├── tui/                 # tabbed OpenTUI
-│   ├── cli/                 # argv routing
-│   └── migrate.ts           # legacy v1 → multi-ai v2
-├── scripts/
-│   ├── cli.ts               # op-ai / op-xai / op-codex
-│   ├── install.ts           # dual providers + dual plugins
-│   └── install-cli.sh       # global shims
-└── test/                    # flat vitest
+│   ├── core/             # accounts, storage v3, rotation-fetch, adapter, i18n
+│   ├── providers/{xai,codex,kiro}/  # per-provider auth/request (+kiro stream)
+│   ├── plugin/           # server plugins + tui.tsx sidebar (separate)
+│   ├── tools/ tui/ cli/ sidebar/
+│   └── migrate.ts        # legacy xai/codex → unified pool
+├── scripts/              # cli, install, install-cli, install-tui
+└── test/                 # flat vitest
 ```
 
 ## WHERE TO LOOK
 
 | Task | Location | Notes |
 |------|----------|-------|
-| OpenCode load | `lib/plugin/xai.ts`, `lib/plugin/codex.ts` | default export `{ id, server }` only |
-| Package root | `index.ts` | named `{ xai, codex }` PluginModules (no default) |
-| Pool / sticky select | `lib/core/accounts.ts` | provider-scoped selection |
-| Rotation fetch | `lib/core/rotation-fetch.ts` | adapter-driven |
-| Provider adapters | `lib/providers/*/adapter.ts` | host-pin (xAI) vs rewrite (Codex) |
-| Disk + lock | `lib/core/storage.ts` | never touch OpenCode `auth.json` for pool |
-| v2 migration | `lib/migrate.ts` | legacy multi-xai / multi-codex → multi-ai |
-| Agent tools | `lib/tools/registry.ts` | `xai-*` / `codex-*` / dual |
-| CLI | `scripts/cli.ts` + `lib/cli/routing.ts` | bin name forces provider |
-| TUI tabs | `lib/tui/app.ts`, `lib/tui/tabs.ts` | |
-| Settings inventory | `lib/core/settings-inventory.ts` | files / env / bins |
-| Install OpenCode | `scripts/install.ts`, `install.sh` | |
+| OpenCode load | `lib/plugin/{xai,codex,kiro}.ts` | default `{ id, server }` only |
+| Package root | `index.ts` | named `{ xai, codex, kiro }` — no default |
+| Pool / sticky | `lib/core/accounts.ts` | provider-scoped sticky map |
+| HTTP rotate / fetch | `rotation-fetch.ts`, `provider-fetch.ts` | HTTP vs custom transport |
+| Adapter contract | `lib/core/adapter.ts` | + `lib/providers/*/adapter.ts` |
+| Disk / schemas | `storage.ts`, `schemas.ts` | v3; never touch `auth.json` |
+| Migration | `lib/migrate.ts` | legacy xai/codex only |
+| Tools / CLI / TUI | `tools/registry.ts`, `scripts/cli.ts`, `tui/` | bins force provider |
+| Sidebar | `plugin/tui.tsx`, `sidebar/active-quota.ts` | `tui.json` only |
+| Install / inventory | `scripts/install.ts`, `settings-inventory.ts` | triple providers |
 
 ## CODE MAP
 
-| Symbol | Type | Location | Role |
-|--------|------|----------|------|
-| `xai` / `codex` plugins | Plugin | `lib/plugin/*.ts` | OpenCode entries |
-| `AccountManager` | class | `lib/core/accounts.ts` | Canonical pool |
-| `createRotationFetch` | fn | `lib/core/rotation-fetch.ts` | Shared pipeline |
-| `xaiAdapter` / `codexAdapter` | ProviderAdapter | `lib/providers/*/adapter.ts` | Provider strategy |
-| `buildTools` | fn | `lib/tools/registry.ts` | Tool maps |
-| `migrateLegacyIfNeeded` | fn | `lib/migrate.ts` | One-shot v2 import |
-| `installProvider` | fn | `scripts/install.ts` | Dual config writer |
-| `main` | fn | `scripts/cli.ts` | `op-ai` dispatcher |
-| `runTui` | fn | `lib/tui/app.ts` | OpenTUI entry |
+| Symbol | Location | Role |
+|--------|----------|------|
+| `xai`/`codex`/`kiro` | `lib/plugin/*.ts` | OpenCode server entries |
+| `AccountManager` / `getAccountManager` | `lib/core/accounts.ts` | Pool + plugin singleton |
+| `createRotationFetch` / `createProviderFetch` | `rotation-fetch.ts` / `provider-fetch.ts` | HTTP vs custom |
+| `*Adapter` / `createKiroFetch` | `providers/*/adapter.ts`, `kiro/request/kiro-fetch.ts` | Strategy + Kiro SDK |
+| `buildTools` / `runTui` / `installProvider` | `tools/registry.ts`, `tui/app.ts`, `scripts/install.ts` | Surfaces |
 
-**Spine:** `storage` → `accounts` → `rotation-fetch` ← adapters ← `auth/refresh`.  
-**Satellites:** tools, tui, dual plugins.  
-**Dual construction:** plugins use `getAccountManager()`; CLI/TUI use `new AccountManager()`.
+**Spine:** `storage` → `accounts` → (`rotation-fetch` \| kiro custom) ← adapters.  
+**Construction:** plugins `getAccountManager()`; CLI/TUI `new AccountManager()`.
 
 ## CONVENTIONS
 
-- ESM only; imports use **`.js` extensions** on TS sources. No path aliases.
-- Ship source: `"main": "index.ts"`, `tsc --noEmit`, Bun preferred.
-- **Plugin export hygiene:** each `lib/plugin/*.ts` default-exports **only** `{ id, server }`. No named function exports on those modules. Root `index.ts` re-exports them as **named** `xai` / `codex` only (no default) so one config path loads both.
-- Zod (`lib/core/schemas.ts`) is the **persisted** boundary (`version: 2` unified). Tools use OpenCode `tool.schema`, not Zod.
-- Provider ids **`xai-multi`** and **`codex-multi` only** — never override built-in `xai` / `openai`.
-- Data under `~/.config/opencode/`:
-  - `multi-ai-accounts.json` (600) — both providers
-  - `multi-ai-settings.json` — locale
-  - `multi-ai-models-xai.json` / `multi-ai-models-codex.json`
-- Env: prefer `MULTI_AI_*`; accept `MULTI_XAI_*` / `MULTI_CODEX_*` fallbacks (see settings inventory).
-- Quiet logs; never pass tokens to `logger`.
+- ESM only; imports use **`.js` extensions** on TS. No path aliases. Ship source (`main: index.ts`); Bun preferred.
+- Plugin hygiene: server modules default `{ id, server }` only; root named `{ xai, codex, kiro }` only; sidebar `{ id, tui }` separate (`tui.json`).
+- Zod v3 persisted boundary (`provider: xai|codex|kiro`); tools use OpenCode `tool.schema`.
+- Provider ids **`xai-multi` / `codex-multi` / `kiro-multi` only**.
+- Data: `~/.config/opencode/multi-ai-accounts.json` (600), `multi-ai-settings.json`, `multi-ai-models-{xai,codex,kiro}.json`.
+- Env: prefer `MULTI_AI_*` (legacy `MULTI_XAI_*` / `MULTI_CODEX_*` fallbacks). Quiet logs; no tokens.
 - Tests: flat `test/*.test.ts`.
 
 ## STORAGE & MIGRATION
 
-- **v2 truth:** one account file, accounts tagged with `provider: "xai" | "codex"`.
-- **Legacy:** `multi-xai-accounts.json` / `multi-codex-accounts.json` (v1) imported by `lib/migrate.ts`.
-- Migration is idempotent; never clobbers existing v2 accounts for a provider already present; writes `.bak` copies of legacy without deleting originals.
-- Install **does not** delete user account files.
+- **v3:** one file; accounts tagged `provider`; sticky map per kind. On-disk v2→v3 via `migrateV2ToV3`.
+- Legacy v1 xai/codex → `lib/migrate.ts` (idempotent; no clobber; `.bak` without delete). No kiro v1.
+- Install never deletes account files.
 
 ## INSTALL (OPENCODE)
 
-`scripts/install.ts`:
-
-1. Target `OPENCODE_CONFIG` or `~/.config/opencode/opencode.json`
-2. Backup existing config to `.bak` (once; never overwrite existing bak)
-3. Merge **both** providers (fill missing only; user edits win)
-4. With `--with-plugin-entry`: register **one** package-root plugin path (loads both providers); rewrite dual module paths; strip `opencode-multi-xai` / `opencode-multi-codex` string or path forms
-5. Preserve unrelated plugins; never write built-in `xai` / `openai` as multi ids
-6. Idempotent reinstall
-
-CLI shims (`scripts/install-cli.sh`): all historical bins → `scripts/cli.ts`.
+`scripts/install.ts`: merge **xai-multi + codex-multi + kiro-multi** into `OPENCODE_CONFIG` or `~/.config/opencode/opencode.json`; backup once to `.bak`; `--with-plugin-entry` → one package-root path; strip legacy plugin entries; never write built-ins. Sidebar: `bun scripts/install-tui.ts` → `tui.json`.
 
 ## ANTI-PATTERNS (THIS PROJECT)
 
-- NEVER raw token/API-key paste — OAuth only (browser/device; Codex also JSON import for OAuth blobs).
-- NEVER override built-in `xai` or `openai` in generated config.
-- NEVER default-export a single PluginModule from package root (would load only one provider). Keep dual named exports; canonical modules stay under `lib/plugin/`.
-- NEVER send xAI bearer except `api.x.ai`; NEVER skip Codex URL rewrite to `chatgpt.com`.
-- NEVER append `Authorization` — always overwrite (dummy SDK key).
-- NEVER set `subscriptionStatus: "dead"` except refresh-grant `invalid_grant`.
-- NEVER mark dead on inference 401 after successful refresh — cooldown + rotate.
-- NEVER map quota/usage strings to dead or prune (recoverable).
-- NEVER prune solely on quota/usage-exhausted — dead **or** `flaggedForRemoval`.
-- NEVER rotate pool on `unknown-client-error` / bare param 4xx.
-- NEVER use rotated refresh token before durable persist; always `refresh_token ?? old`.
-- NEVER nest storage transactions on same path; never log token values.
-- NEVER named exports from plugin modules; no `as any` / `@ts-ignore`.
-- NEVER change public OAuth constants (xAI `:56121` + `plan=generic`; Codex `:1455` + extras).
-- NEVER delete user account files from install scripts.
-- NEVER publish to npm as part of routine agent work.
+- NEVER raw-token paste into multi pool for xAI/Codex (OAuth / OAuth-JSON import only). Kiro: only via its auth methods (`ksk_*`, IDC, imports) — not free-form storage helpers.
+- NEVER put pool tokens in OpenCode `auth.json`; never leave host `type=oauth` there (host-auth placeholder only).
+- NEVER override built-in `xai` / `openai`; never default-export a single PluginModule from package root.
+- NEVER send xAI bearer except `api.x.ai`; NEVER skip Codex rewrite to `chatgpt.com`; NEVER host-pin/rewrite inside `rotation-fetch` (adapter owns URL).
+- NEVER attach `Authorization` before `adapter.resolveUrl`; NEVER append — always overwrite (dummy SDK key).
+- NEVER set `subscriptionStatus: "dead"` except refresh `invalid_grant`; NEVER dead-mark on post-refresh inference 401.
+- NEVER map quota/usage → dead/prune; prune only dead **or** `flaggedForRemoval`.
+- NEVER rotate on `unknown-client-error` / bare param 4xx; NEVER cross-provider select/sticky.
+- NEVER use `activeIndex` storage (sticky map only, v3); NEVER nest storage txs; NEVER log tokens.
+- NEVER use rotated refresh before durable persist; always `refresh_token ?? old`.
+- NEVER named exports from plugin server modules; NEVER combine `server`+`tui`; no `as any` / `@ts-ignore`.
+- NEVER change OAuth constants (xAI `:56121`+`plan=generic`; Codex `:1455`+extras).
+- NEVER force Kiro through pure `createRotationFetch` — `transport.kind: "custom"` + `createKiroFetch`.
+- NEVER models.dev network on cold start; NEVER delete user account files from install; NEVER publish npm as routine agent work.
 
 ## UNIQUE STYLES
 
-- Selection: sticky active per provider → on fail, rescan **priority-sorted** list.
-- Priority DESC, then `addedAt` ASC.
-- Models.dev network sync **only after successful OAuth**, not cold start.
-- CLI reuses agent tools; bin name (`op-xai` / `op-codex`) forces provider.
+- Selection: sticky active per provider → on fail, rescan **priority-sorted** list (priority DESC, then lastUsed/addedAt rules in `resolveActiveAccount`).
+- Account selection strategies: `sticky` \| `round-robin` \| `lowest-usage` (Kiro exposes strategy option).
+- Models.dev / catalog network sync **only after successful OAuth** (or explicit allowNetwork), not cold start.
+- CLI reuses agent tools; bin name forces provider (`op-xai` / `op-codex` / `op-kiro`).
 - Display name: label → email → short id.
-- xAI: host-pin + rate-limit headers + billing credits.  
-  Codex: URL rewrite + usage windows (primary/secondary).
+- **xAI:** host-pin + rate-limit headers + billing credits.  
+- **Codex:** URL rewrite + primary/secondary usage windows.  
+- **Kiro:** region-aware CodeWhisperer endpoints, OpenAI-compat body → SDK request, SSE stream out; usage `usedCount`/`limitCount`.
+- TUI tabs order: **Codex → xAI → Kiro** (`1`/`2`/`3`).
 
 ## COMMANDS
 
@@ -144,10 +114,12 @@ CLI shims (`scripts/install-cli.sh`): all historical bins → `scripts/cli.ts`.
 bun install                 # or npm install
 npm run typecheck           # tsc --noEmit
 npm test                    # vitest run
+npm run test:tui-ffi        # TUI test under bun
 
 ./install.sh --path         # or npm run setup
 npm run install:global      # shims → ~/.local/bin
 bun scripts/install.ts [--with-plugin-entry]
+bun scripts/install-tui.ts  # session sidebar plugin
 bun scripts/cli.ts help
 
 # remote (set MULTI_AI_REPO_URL first):
@@ -156,7 +128,8 @@ curl -fsSL …/install.sh | bash -s -- --path --with-plugin
 
 ## NOTES
 
-- Package `opencode-multi-ai`; bins `op-ai`, `op-xai`, `op-codex`, historical aliases.
+- Package `opencode-multi-ai`; bins `op-ai`, `op-xai`, `op-codex`, `op-kiro`, historical aliases.
 - `opencode xai-add` / `opencode codex-add` do **not** work as CLI shortcuts (paths); use `op-ai` / TUI / agent tools.
-- Settings inventory: `lib/core/settings-inventory.ts`.
-- Child domains live under `lib/providers/{xai,codex}/` — do not re-merge into a single plugin.
+- Child domains: `lib/providers/{xai,codex,kiro}/` — keep isolated; implement `TransportProviderAdapter`.
+- Hotspots: `lib/tui/app.ts` (~3k), `lib/tools/registry.ts`, `lib/core/accounts.ts` — prefer targeted edits.
+- Hierarchical docs: `lib/core/AGENTS.md`, `lib/providers/*/AGENTS.md`, `lib/plugin/AGENTS.md`, `lib/tui/AGENTS.md`.

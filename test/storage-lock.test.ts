@@ -22,7 +22,7 @@ function tmpStorePath(): string {
 
 function seedStorage(): AccountStorage {
   return {
-    version: 2,
+    version: 3,
     accounts: [],
     sticky: {},
   };
@@ -461,6 +461,6 @@ describe("withCrossProcessTransaction", () => {
 
     const onDisk = await loadAccounts(storePath);
     expect(onDisk.accounts.map((a) => a.accountId)).toEqual(["persist-check"]);
-    expect(onDisk.version).toBe(2);
+    expect(onDisk.version).toBe(3);
   });
 });

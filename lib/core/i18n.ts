@@ -163,15 +163,34 @@ const en: Dict = {
   live_busy: "  ·  live …",
   accounts_title: " accounts ",
   actions_title: " actions ",
+  menu_account: "› Account",
+  menu_edit: "› Edit",
+  menu_add: "› Add",
+  menu_quota: "› Quota",
+  menu_danger: "› Danger",
+  menu_back: "‹ Back",
+  menu_desc_back: "Return to main action menu",
+  menu_desc_account: "Switch, enable/disable, priority",
+  menu_desc_edit: "Label, tags, note",
+  menu_desc_add: "Device or browser OAuth",
+  menu_desc_add_kiro:
+    "API key, Builder ID / IDC, Profile ARN, JSON import, kiro-cli",
+  menu_desc_quota: "Refresh, live probe, reload pool",
+  menu_desc_danger: "Flag, remove, prune",
   detail_title: " detail / quota ",
   empty_pool: "  empty pool",
   empty_hint:
-    "opencode auth login → xai-multi / codex-multi → SuperGrok or ChatGPT OAuth",
+    "opencode auth login → xai-multi / codex-multi / kiro-multi",
   no_accounts:
-    "No accounts yet.\n\nAdd one (OAuth only):\n  1. Press a (device code)\n  2. Or A (browser)\n  3. Esc cancels while waiting\n\nTabs: xAI | Codex",
+    "No accounts yet.\n\nAdd one:\n  xAI/Codex: a device · A browser\n  Kiro: a IDC · i API key · I ARN · o JSON · O export · c kiro-cli\n  Esc cancels while waiting\n\nTabs: Codex | xAI | Kiro",
   lang_switched: "Language: English",
   add_device: "a  Add (device)",
   add_browser: "A  Add (browser)",
+  add_kiro_api_key: "i  API key (ksk_)",
+  add_kiro_idc_arn: "I  IDC + Profile ARN",
+  add_kiro_json: "o  Import credentials JSON",
+  add_kiro_export: "O  Import Account Manager export",
+  add_kiro_cli: "c  Import kiro-cli DB",
   how_to_add: "?  How to add",
   refresh: "r  Refresh",
   refresh_all: "R  Refresh all",
@@ -189,6 +208,7 @@ const en: Dict = {
   unflag: "u  Unflag",
   remove: "x  Remove",
   prune: "p  Prune",
+  clean_dead: "P  Clean dead",
   reload: "L  Reload",
   quit: "q  Quit",
   lang: "g  Language",
@@ -196,8 +216,18 @@ const en: Dict = {
     "Start device OAuth for the active tab — open URL, enter code; Esc cancels mid-flow",
   desc_add_browser:
     "Open browser OAuth on the active tab's loopback — same pool upsert; Esc cancels",
+  desc_add_kiro_api_key:
+    "Add Kiro account with API key (ksk_…) and optional region",
+  desc_add_kiro_idc_arn:
+    "IAM Identity Center device login with required Profile ARN",
+  desc_add_kiro_json:
+    "Paste single-account credentials JSON (refreshToken + method fields)",
+  desc_add_kiro_export:
+    "Paste Kiro Account Manager export JSON (accounts array)",
+  desc_add_kiro_cli:
+    "Import accounts from local kiro-cli SQLite (default path or custom)",
   desc_how_to_add:
-    "Show step-by-step add guide (device vs browser, no raw token paste)",
+    "Show step-by-step add guide for the active provider",
   desc_refresh: "Probe selected account quota / usage for the active tab",
   desc_refresh_all:
     "Probe every account on the active tab in parallel batches",
@@ -227,7 +257,9 @@ const en: Dict = {
   desc_remove:
     "Permanently delete selected account (press twice to confirm; OAuth gone)",
   desc_prune:
-    "Bulk-remove dead / expired / exhausted / flagged (press twice to confirm)",
+    "Bulk-remove dead or flagged accounts (press twice to confirm)",
+  desc_clean_dead:
+    "Remove only dead (invalid_grant) accounts — not quota-exhausted (press P twice)",
   desc_reload:
     "Re-read multi-ai-accounts.json from disk (other process edits)",
   desc_quit: "Exit the TUI (pool file stays; OpenCode keeps running)",
@@ -257,15 +289,34 @@ const vi: Dict = {
   live_busy: "  ·  live …",
   accounts_title: " tài khoản ",
   actions_title: " thao tác ",
+  menu_account: "› Tài khoản",
+  menu_edit: "› Sửa",
+  menu_add: "› Thêm",
+  menu_quota: "› Hạn mức",
+  menu_danger: "› Nguy hiểm",
+  menu_back: "‹ Quay lại",
+  menu_desc_back: "Về menu thao tác chính",
+  menu_desc_account: "Switch, bật/tắt, ưu tiên",
+  menu_desc_edit: "Nhãn, tags, ghi chú",
+  menu_desc_add: "OAuth thiết bị hoặc trình duyệt",
+  menu_desc_add_kiro:
+    "API key, Builder ID / IDC, Profile ARN, import JSON, kiro-cli",
+  menu_desc_quota: "Refresh, live probe, tải lại pool",
+  menu_desc_danger: "Cờ, xoá, dọn",
   detail_title: " chi tiết / hạn mức ",
   empty_pool: "  chưa có tài khoản",
   empty_hint:
-    "opencode auth login → xai-multi / codex-multi → SuperGrok hoặc ChatGPT OAuth",
+    "opencode auth login → xai-multi / codex-multi / kiro-multi",
   no_accounts:
-    "Chưa có tài khoản.\n\nThêm (chỉ OAuth):\n  1. Nhấn a (mã thiết bị)\n  2. Hoặc A (trình duyệt)\n  3. Esc để huỷ khi đang chờ\n\nTab: xAI | Codex",
+    "Chưa có tài khoản.\n\nThêm:\n  xAI/Codex: a mã thiết bị · A trình duyệt\n  Kiro: a IDC · i API key · I ARN · o JSON · O export · c kiro-cli\n  Esc huỷ khi đang chờ\n\nTab: Codex | xAI | Kiro",
   lang_switched: "Ngôn ngữ: Tiếng Việt",
   add_device: "a  Thêm (mã thiết bị)",
   add_browser: "A  Thêm (trình duyệt)",
+  add_kiro_api_key: "i  API key (ksk_)",
+  add_kiro_idc_arn: "I  IDC + Profile ARN",
+  add_kiro_json: "o  Import credentials JSON",
+  add_kiro_export: "O  Import Account Manager export",
+  add_kiro_cli: "c  Import kiro-cli DB",
   how_to_add: "?  Hướng dẫn thêm",
   refresh: "r  Làm mới",
   refresh_all: "R  Làm mới tất cả",
@@ -282,7 +333,8 @@ const vi: Dict = {
   flag: "f  Đánh dấu xoá",
   unflag: "u  Bỏ đánh dấu",
   remove: "x  Xoá",
-  prune: "p  Dọn dead",
+  prune: "p  Dọn dead/flag",
+  clean_dead: "P  Xoá dead",
   reload: "L  Tải lại",
   quit: "q  Thoát",
   lang: "g  Ngôn ngữ",
@@ -290,8 +342,18 @@ const vi: Dict = {
     "OAuth mã thiết bị cho tab đang chọn — mở URL, nhập mã; Esc huỷ giữa chừng",
   desc_add_browser:
     "OAuth trình duyệt loopback của tab đang chọn — upsert vào pool; Esc huỷ",
+  desc_add_kiro_api_key:
+    "Thêm tài khoản Kiro bằng API key (ksk_…) và region tuỳ chọn",
+  desc_add_kiro_idc_arn:
+    "Đăng nhập IAM Identity Center (device) kèm Profile ARN bắt buộc",
+  desc_add_kiro_json:
+    "Dán credentials JSON một account (refreshToken + các field method)",
+  desc_add_kiro_export:
+    "Dán export JSON của Kiro Account Manager (mảng accounts)",
+  desc_add_kiro_cli:
+    "Import từ SQLite kiro-cli local (đường dẫn mặc định hoặc tuỳ chọn)",
   desc_how_to_add:
-    "Hiện hướng dẫn thêm từng bước (device / browser, không dán token)",
+    "Hiện hướng dẫn thêm cho provider đang chọn",
   desc_refresh: "Probe acc đang chọn (quota / usage) cho tab hiện tại",
   desc_refresh_all:
     "Probe mọi tài khoản trên tab hiện tại theo batch song song",
@@ -321,7 +383,9 @@ const vi: Dict = {
   desc_remove:
     "Xoá vĩnh viễn acc đang chọn (nhấn 2 lần xác nhận; mất OAuth)",
   desc_prune:
-    "Xoá hàng loạt dead / hết hạn / hết quota / flagged (nhấn 2 lần)",
+    "Xoá hàng loạt dead hoặc flagged (bấm p hai lần để xác nhận)",
+  desc_clean_dead:
+    "Chỉ xoá account dead (invalid_grant) — không đụng quota-exhausted (bấm P hai lần)",
   desc_reload:
     "Đọc lại multi-ai-accounts.json từ disk (sửa từ process khác)",
   desc_quit: "Thoát TUI (file pool giữ nguyên; OpenCode vẫn chạy)",

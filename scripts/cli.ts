@@ -1,22 +1,27 @@
 #!/usr/bin/env bun
 /**
- * Unified multi-AI CLI (op-ai / op-xai / op-codex).
+ * Unified multi-AI CLI (op-ai / op-xai / op-codex / op-kiro).
  *
  * Usage:
  *   op-ai                        Open tabbed TUI (default)
- *   op-ai list                   List both providers
+ *   op-ai list                   List all providers
  *   op-ai --provider xai list
  *   op-xai list                  Forced xAI (alias)
  *   op-codex import --file ...
+ *   op-kiro import --api-key ksk_…
  *   bun scripts/cli.ts help
  */
 
 import type { ToolContext } from "@opencode-ai/plugin";
 
-import { AccountManager } from "../lib/core/accounts.js";
+import {
+  AccountManager,
+  createDefaultRefreshHandlers,
+} from "../lib/core/accounts.js";
 import type { ProviderKind } from "../lib/core/schemas.js";
 import {
   buildCodexTools,
+  buildKiroTools,
   buildTools,
   buildXaiTools,
 } from "../lib/tools/registry.js";
@@ -33,14 +38,20 @@ import {
 
 function usage(forced?: ProviderKind): string {
   const bin =
-    forced === "xai" ? "op-xai" : forced === "codex" ? "op-codex" : "op-ai";
+    forced === "xai"
+      ? "op-xai"
+      : forced === "codex"
+        ? "op-codex"
+        : forced === "kiro"
+          ? "op-kiro"
+          : "op-ai";
   const providerHint =
     forced === undefined
-      ? "  --provider xai|codex   Required for mutating commands on op-ai"
+      ? "  --provider xai|codex|kiro   Required for mutating commands on op-ai"
       : `  (provider forced: ${forced} via bin name)`;
 
   const lines = [
-    `${bin} — SuperGrok + ChatGPT/Codex multi-account CLI for OpenCode`,
+    `${bin} — SuperGrok + ChatGPT/Codex + Kiro multi-account CLI for OpenCode`,
     "",
     "Usage:",
     `  ${bin}                     Open TUI (default)`,
@@ -49,13 +60,13 @@ function usage(forced?: ProviderKind): string {
     "",
     "Provider:",
     providerHint,
-    "  Aliases: op-xai / xai-multi → xai;  op-codex / codex-multi → codex",
+    "  Aliases: op-xai / xai-multi → xai;  op-codex / codex-multi → codex;  op-kiro / kiro-multi → kiro",
     "",
     "Commands:",
     "  help                    Show this help",
-    "  tui [--lang vi|en] [--provider xai|codex]",
+    "  tui [--lang vi|en] [--provider xai|codex|kiro]",
     "                          Tabbed OpenTUI account manager (default)",
-    "  status [--provider …]   Compact pool status (both if omitted on op-ai)",
+    "  status [--provider …]   Compact pool status (all if omitted on op-ai)",
     "  list [--tag NAME] [--provider …]",
     "  add [--browser] [--provider …]",
     "  limits|quota [--probe] [--provider …]",
@@ -71,19 +82,32 @@ function usage(forced?: ProviderKind): string {
     "  priority --index N --direction up|down|top",
     "  priority --index N --priority N",
     "  prune [--tag NAME] [--execute]",
+    "  clean-dead [--execute]   Remove dead accounts only",
   ];
 
   if (forced === undefined || forced === "codex") {
     lines.push(
-      "  import --file PATH     Codex only: import JSON (9router / auth.json)",
+      "  import --file PATH     Codex: import JSON (9router / auth.json)",
       "  import --json TEXT",
+    );
+  }
+  if (forced === undefined || forced === "kiro") {
+    lines.push(
+      "  add --api-key ksk_… [--region us-east-1]",
+      "  add [--start-url URL] [--idc-region REG] [--profile-arn ARN]",
+      "  import --file PATH     Kiro: JSON credentials",
+      "  import --json TEXT",
+      "  import --api-key ksk_… [--region us-east-1]",
+      "  import --export-json TEXT   Kiro Account Manager export",
+      "  import --kiro-cli [--kiro-cli-path PATH]",
+      "  import --legacy-db PATH",
     );
   }
 
   lines.push(
     "",
     "Language: MULTI_AI_LANG=en|vi  or  --lang vi  (default: en)",
-    "  In TUI press g to toggle language; Tab / 1 / 2 switch provider tabs.",
+    "  In TUI press g to toggle language; Tab / 1 / 2 / 3 switch provider tabs.",
     "",
     "Examples:",
     `  ${bin}`,
@@ -91,11 +115,13 @@ function usage(forced?: ProviderKind): string {
     "  op-ai --provider xai limits --probe",
     "  op-xai switch --index 0",
     "  op-codex import --file ~/.codex/auth.json",
+    "  op-kiro add",
+    "  op-kiro import --api-key ksk_…",
     "  op-codex remove --index 1 --confirm",
     "",
     "Add account:",
-    "  opencode auth login   # pick xai-multi or codex-multi",
-    "  op-xai add | op-codex add | op-ai --provider xai add",
+    "  opencode auth login   # pick xai-multi / codex-multi / kiro-multi",
+    "  op-xai add | op-codex add | op-kiro add",
     "",
     "Note: do not run `opencode xai-add` / `opencode codex-add` —",
     "OpenCode treats those as project paths.",
@@ -117,22 +143,16 @@ function toolCtx(): ToolContext {
 }
 
 function createManager(storagePath?: string): AccountManager {
-  // Refresh handlers are optional for list/status; health/refresh need them.
-  // Wire real OAuth refresh so force-refresh tools work in CLI.
-  return new AccountManager(storagePath, {
-    xai: async (refreshToken) => {
-      const { refreshTokens } = await import(
-        "../lib/providers/xai/auth/oauth.js"
-      );
-      return refreshTokens(refreshToken);
-    },
-    codex: async (refreshToken) => {
-      const { refreshTokens } = await import(
-        "../lib/providers/codex/auth/oauth.js"
-      );
-      return refreshTokens(refreshToken);
-    },
-  });
+  return new AccountManager(storagePath, createDefaultRefreshHandlers());
+}
+
+function toolsFor(
+  manager: AccountManager,
+  provider: ProviderKind,
+): Record<string, import("@opencode-ai/plugin").ToolDefinition> {
+  if (provider === "xai") return buildXaiTools(manager);
+  if (provider === "codex") return buildCodexTools(manager);
+  return buildKiroTools(manager);
 }
 
 async function runAdd(
@@ -181,81 +201,148 @@ async function runAdd(
     return;
   }
 
-  const { browserLogin, deviceCodeLoginFlow } = await import(
-    "../lib/providers/codex/auth/login.js"
+  if (provider === "codex") {
+    const { browserLogin, deviceCodeLoginFlow } = await import(
+      "../lib/providers/codex/auth/login.js"
+    );
+    if (useBrowser) {
+      console.log(
+        "Starting browser OAuth (loopback http://localhost:1455/auth/callback)…",
+      );
+      const result = await browserLogin(view, {
+        onAuthorizeUrl: (url) => console.log(`Open: ${url}`),
+      });
+      console.log(
+        result.outcome === "added"
+          ? `Added account ${result.email ?? result.accountId}`
+          : `Updated account ${result.email ?? result.accountId}`,
+      );
+    } else {
+      console.log("Starting device OAuth…");
+      const result = await deviceCodeLoginFlow(view, (prompt) => {
+        console.log("");
+        console.log(`Open: ${prompt.verificationUri}`);
+        console.log(`Code: ${prompt.userCode}`);
+        if (prompt.verificationUriComplete) {
+          console.log(`One-click: ${prompt.verificationUriComplete}`);
+        }
+        console.log(`Expires in ~${prompt.expiresIn}s`);
+        console.log("Waiting for authorization…");
+      });
+      console.log(
+        result.outcome === "added"
+          ? `Added account ${result.email ?? result.accountId}`
+          : `Updated account ${result.email ?? result.accountId}`,
+      );
+    }
+    return;
+  }
+
+  const {
+    loginWithApiKey,
+    loginWithIdcDevice,
+  } = await import("../lib/providers/kiro/auth/login.js");
+  const apiKey = strFlag(flags, "api-key") ?? strFlag(flags, "apiKey");
+  const region = strFlag(flags, "region");
+  if (apiKey) {
+    console.log("Importing Kiro API key…");
+    const account = await loginWithApiKey(apiKey, region);
+    const outcome = await view.upsertFromOAuth(account);
+    console.log(
+      outcome === "added"
+        ? `Added account ${account.email ?? account.accountId}`
+        : `Updated account ${account.email ?? account.accountId}`,
+    );
+    return;
+  }
+
+  const startUrl = strFlag(flags, "start-url") ?? strFlag(flags, "startUrl");
+  const profileArn =
+    strFlag(flags, "profile-arn") ?? strFlag(flags, "profileArn");
+  const idcRegion =
+    strFlag(flags, "idc-region") ?? strFlag(flags, "idcRegion") ?? region;
+  console.log(
+    profileArn
+      ? "Starting Kiro IDC device OAuth (with Profile ARN)…"
+      : "Starting Kiro IDC device OAuth (AWS Builder ID / Identity Center)…",
   );
-  if (useBrowser) {
-    console.log(
-      "Starting browser OAuth (loopback http://localhost:1455/auth/callback)…",
-    );
-    const result = await browserLogin(view, {
-      onAuthorizeUrl: (url) => console.log(`Open: ${url}`),
-    });
-    console.log(
-      result.outcome === "added"
-        ? `Added account ${result.email ?? result.accountId}`
-        : `Updated account ${result.email ?? result.accountId}`,
-    );
-  } else {
-    console.log("Starting device OAuth…");
-    const result = await deviceCodeLoginFlow(view, (prompt) => {
+  const account = await loginWithIdcDevice(
+    {
+      startUrl,
+      idcRegion,
+      profileArn,
+      openBrowser: useBrowser || true,
+    },
+    (prompt) => {
       console.log("");
       console.log(`Open: ${prompt.verificationUri}`);
       console.log(`Code: ${prompt.userCode}`);
       if (prompt.verificationUriComplete) {
         console.log(`One-click: ${prompt.verificationUriComplete}`);
       }
-      console.log(`Expires in ~${prompt.expiresIn}s`);
       console.log("Waiting for authorization…");
-    });
-    console.log(
-      result.outcome === "added"
-        ? `Added account ${result.email ?? result.accountId}`
-        : `Updated account ${result.email ?? result.accountId}`,
-    );
-  }
+    },
+  );
+  const outcome = await view.upsertFromOAuth(account);
+  console.log(
+    outcome === "added"
+      ? `Added account ${account.email ?? account.accountId}`
+      : `Updated account ${account.email ?? account.accountId}`,
+  );
 }
 
 async function runImport(
+  provider: ProviderKind,
   flags: Record<string, string | boolean>,
 ): Promise<void> {
-  const manager = createManager();
-  await manager.load();
-  const view = manager.providerView("codex");
-  const {
-    importAccountsFromJsonFile,
-    importAccountsFromJsonText,
-  } = await import("../lib/providers/codex/auth/import-json.js");
-  const file = strFlag(flags, "file") ?? strFlag(flags, "path");
-  const json = strFlag(flags, "json");
-  if (!file && !json) {
-    console.error(
-      "import requires --file PATH or --json TEXT\n\n" +
-        "Examples:\n" +
-        "  op-codex import --file ./accounts.json\n" +
-        "  op-codex import --file ~/.codex/auth.json\n" +
-        "  op-codex import --json '{\"accessToken\":\"…\",\"refreshToken\":\"…\"}'",
-    );
-    process.exitCode = 1;
+  if (provider === "codex") {
+    const manager = createManager();
+    await manager.load();
+    const view = manager.providerView("codex");
+    const {
+      importAccountsFromJsonFile,
+      importAccountsFromJsonText,
+    } = await import("../lib/providers/codex/auth/import-json.js");
+    const file = strFlag(flags, "file") ?? strFlag(flags, "path");
+    const json = strFlag(flags, "json");
+    if (!file && !json) {
+      console.error(
+        "import requires --file PATH or --json TEXT\n\n" +
+          "Examples:\n" +
+          "  op-codex import --file ./accounts.json\n" +
+          "  op-codex import --file ~/.codex/auth.json\n" +
+          "  op-codex import --json '{\"accessToken\":\"…\",\"refreshToken\":\"…\"}'",
+      );
+      process.exitCode = 1;
+      return;
+    }
+    const result = file
+      ? await importAccountsFromJsonFile(view, file)
+      : await importAccountsFromJsonText(view, json!);
+    for (const row of result.results) {
+      if (row.ok) {
+        const who = row.email ?? row.accountId.slice(0, 12);
+        console.log(
+          row.outcome === "added"
+            ? `[${row.index}] added ${who}`
+            : `[${row.index}] updated ${who}`,
+        );
+      } else {
+        console.error(`[${row.index}] failed: ${row.error}`);
+      }
+    }
+    console.log(`Import done · ${result.success} ok · ${result.failed} failed`);
+    if (result.failed > 0) process.exitCode = 1;
     return;
   }
-  const result = file
-    ? await importAccountsFromJsonFile(view, file)
-    : await importAccountsFromJsonText(view, json!);
-  for (const row of result.results) {
-    if (row.ok) {
-      const who = row.email ?? row.accountId.slice(0, 12);
-      console.log(
-        row.outcome === "added"
-          ? `[${row.index}] added ${who}`
-          : `[${row.index}] updated ${who}`,
-      );
-    } else {
-      console.error(`[${row.index}] failed: ${row.error}`);
-    }
+
+  if (provider === "kiro") {
+    await runToolCommand("kiro", "import", flags);
+    return;
   }
-  console.log(`Import done · ${result.success} ok · ${result.failed} failed`);
-  if (result.failed > 0) process.exitCode = 1;
+
+  console.error("import is Codex- or Kiro-only. Use op-codex / op-kiro.");
+  process.exitCode = 1;
 }
 
 async function runToolCommand(
@@ -265,8 +352,7 @@ async function runToolCommand(
 ): Promise<void> {
   const manager = createManager();
   await manager.load();
-  const tools =
-    provider === "xai" ? buildXaiTools(manager) : buildCodexTools(manager);
+  const tools = toolsFor(manager, provider);
   const name = toolNameFor(provider, command);
   const tool = tools[name];
   if (!tool) {
@@ -306,16 +392,40 @@ async function runToolCommand(
     const pr = numFlag(flags, "priority");
     if (pr !== undefined) args.priority = pr;
   }
-  if (command === "prune") {
+  if (command === "prune" || command === "clean-dead") {
     args.dryRun = flags.execute !== true && flags.execute !== "true";
-    const tag = strFlag(flags, "tag");
-    if (tag) args.tag = tag;
+    if (command === "prune") {
+      const tag = strFlag(flags, "tag");
+      if (tag) args.tag = tag;
+    }
   }
   if (command === "import") {
     const file = strFlag(flags, "file") ?? strFlag(flags, "path");
     const json = strFlag(flags, "json");
+    const apiKey = strFlag(flags, "api-key") ?? strFlag(flags, "apiKey");
+    const region = strFlag(flags, "region");
+    const exportJson =
+      strFlag(flags, "export-json") ?? strFlag(flags, "exportJson");
+    const kiroCliPath =
+      strFlag(flags, "kiro-cli-path") ?? strFlag(flags, "kiroCliPath");
+    const legacyDb =
+      strFlag(flags, "legacy-db") ?? strFlag(flags, "legacyDb");
     if (file) args.file = file;
     if (json) args.json = json;
+    if (apiKey) args.apiKey = apiKey;
+    if (region) args.region = region;
+    if (exportJson) args.exportJson = exportJson;
+    if (flags["kiro-cli"] === true || flags.kiroCli === true) {
+      args.kiroCli = true;
+    }
+    if (kiroCliPath) {
+      args.kiroCli = true;
+      args.kiroCliPath = kiroCliPath;
+    }
+    if (legacyDb) args.legacyDb = legacyDb;
+    if (flags["skip-validate"] === true || flags.skipValidate === true) {
+      args.skipValidate = true;
+    }
   }
 
   const out = await tool.execute(args, toolCtx());
@@ -326,23 +436,28 @@ async function runStatusBoth(): Promise<void> {
   const manager = createManager();
   await manager.load();
   const { all } = buildTools(manager);
-  const xai = all["xai-status"];
-  const codex = all["codex-status"];
-  if (xai) console.log(await xai.execute({}, toolCtx()));
-  if (codex) console.log(await codex.execute({}, toolCtx()));
+  for (const key of ["xai-status", "codex-status", "kiro-status"] as const) {
+    const t = all[key];
+    if (t) console.log(await t.execute({}, toolCtx()));
+  }
 }
 
-async function runListBoth(flags: Record<string, string | boolean>): Promise<void> {
+async function runListBoth(
+  flags: Record<string, string | boolean>,
+): Promise<void> {
   const manager = createManager();
   await manager.load();
   const { all } = buildTools(manager);
   const tag = strFlag(flags, "tag");
   const args = tag ? { tag } : {};
-  const xai = all["xai-list"];
-  const codex = all["codex-list"];
-  if (xai) console.log(await xai.execute(args, toolCtx()));
-  console.log("");
-  if (codex) console.log(await codex.execute(args, toolCtx()));
+  let first = true;
+  for (const key of ["xai-list", "codex-list", "kiro-list"] as const) {
+    const t = all[key];
+    if (!t) continue;
+    if (!first) console.log("");
+    first = false;
+    console.log(await t.execute(args, toolCtx()));
+  }
 }
 
 async function main(): Promise<void> {
@@ -378,15 +493,17 @@ async function main(): Promise<void> {
   }
 
   if (command === "import" && (provider ?? forced) === "xai") {
-    console.error("import is Codex-only. Use op-codex or --provider codex.");
+    console.error(
+      "import is Codex- or Kiro-only. Use op-codex / op-kiro or --provider codex|kiro.",
+    );
     process.exitCode = 1;
     return;
   }
 
   if (requiresProvider(command, forced) && !provider) {
     console.error(
-      `Command "${command}" requires --provider xai|codex\n` +
-        `(or use op-xai / op-codex alias)\n`,
+      `Command "${command}" requires --provider xai|codex|kiro\n` +
+        `(or use op-xai / op-codex / op-kiro alias)\n`,
     );
     console.error(usage(undefined));
     process.exitCode = 1;
@@ -399,7 +516,7 @@ async function main(): Promise<void> {
       return;
     }
     if (command === "import") {
-      await runImport(flags);
+      await runImport(provider!, flags);
       return;
     }
     if (!provider && (command === "status" || command === "list")) {

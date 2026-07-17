@@ -2,10 +2,15 @@ import { describe, expect, it } from "vitest";
 
 import {
   TUI_BINDINGS,
+  actionMenuBack,
+  actionMenuItems,
+  actionMenuSelectValue,
   advanceConfirmation,
   clearConfirmation,
+  createActionMenuLevel,
   decodeTuiAction,
   normalizeTags,
+  openActionMenuGroup,
   rowIndexFromMouse,
   type ConfirmationState,
   type TuiKeyEvent,
@@ -91,8 +96,8 @@ describe("decodeTuiAction", () => {
     expect(decodeTuiAction(key({ name: "x" }))).toBe("remove");
     expect(decodeTuiAction(key({ name: "p" }))).toBe("prune");
     expect(decodeTuiAction(key({ name: "v" }))).toBe("toggle-live");
-    expect(decodeTuiAction(key({ name: "1" }))).toBe("tab-xai");
-    expect(decodeTuiAction(key({ name: "2" }))).toBe("tab-codex");
+    expect(decodeTuiAction(key({ name: "1" }))).toBe("tab-codex");
+    expect(decodeTuiAction(key({ name: "2" }))).toBe("tab-xai");
     expect(decodeTuiAction(key({ name: "tab" }))).toBe("tab-next");
   });
 
@@ -256,6 +261,11 @@ describe("TUI_BINDINGS registry", () => {
       "quit",
       "add-device",
       "add-browser",
+      "add-kiro-api-key",
+      "add-kiro-idc-arn",
+      "add-kiro-json",
+      "add-kiro-export",
+      "add-kiro-cli",
       "switch",
       "prio-up",
       "prio-down",
@@ -269,6 +279,7 @@ describe("TUI_BINDINGS registry", () => {
       "unflag",
       "remove",
       "prune",
+      "clean-dead",
       "refresh",
       "refresh-all",
       "toggle-live",
@@ -318,5 +329,88 @@ describe("rowIndexFromMouse", () => {
     expect(rowIndexFromMouse(0, 10, 0, 0, 5)).toBe(0);
     expect(rowIndexFromMouse(1, 10, 0, 0, 5)).toBe(1);
     expect(rowIndexFromMouse(2, 10, -3, 0, 5)).toBe(2);
+  });
+});
+
+describe("action menu hierarchy", () => {
+  it("main level lists groups then top actions", () => {
+    const main = createActionMenuLevel();
+    const items = actionMenuItems(main);
+    expect(items.some((i) => i.kind === "group" && i.id === "account")).toBe(
+      true,
+    );
+    expect(items.some((i) => i.kind === "group" && i.id === "danger")).toBe(
+      true,
+    );
+    expect(items.some((i) => i.kind === "top" && i.action === "quit")).toBe(
+      true,
+    );
+    expect(items.some((i) => i.kind === "back")).toBe(false);
+  });
+
+  it("open group then back restores main", () => {
+    let level = createActionMenuLevel();
+    level = openActionMenuGroup(level, "quota");
+    expect(level.kind).toBe("group");
+    const items = actionMenuItems(level);
+    expect(items[0]?.kind).toBe("back");
+    expect(
+      items.some(
+        (i) => i.kind === "action" && i.binding.action === "refresh",
+      ),
+    ).toBe(true);
+    level = actionMenuBack(level);
+    expect(level.kind).toBe("main");
+  });
+
+  it("select values encode open / back / run", () => {
+    const items = actionMenuItems(createActionMenuLevel());
+    const account = items.find((i) => i.kind === "group" && i.id === "account");
+    expect(account).toBeDefined();
+    expect(actionMenuSelectValue(account!)).toEqual({
+      type: "open",
+      group: "account",
+    });
+    expect(actionMenuSelectValue({ kind: "back", labelKey: "menu_back" })).toEqual({
+      type: "back",
+    });
+  });
+
+  it("add group lists kiro login methods only on kiro tab", () => {
+    let level = openActionMenuGroup(createActionMenuLevel(), "add");
+    const xaiItems = actionMenuItems(level, "xai");
+    const xaiActions = xaiItems
+      .filter((i) => i.kind === "action")
+      .map((i) => (i.kind === "action" ? i.binding.action : ""));
+    expect(xaiActions).toEqual(["add-device", "add-browser"]);
+
+    const kiroItems = actionMenuItems(level, "kiro");
+    const kiroActions = kiroItems
+      .filter((i) => i.kind === "action")
+      .map((i) => (i.kind === "action" ? i.binding.action : ""));
+    expect(kiroActions).toEqual([
+      "add-device",
+      "add-kiro-api-key",
+      "add-kiro-idc-arn",
+      "add-kiro-json",
+      "add-kiro-export",
+      "add-kiro-cli",
+    ]);
+  });
+
+  it("decodes kiro add hotkeys", () => {
+    expect(decodeTuiAction(key({ name: "i" }))).toBe("add-kiro-api-key");
+    expect(decodeTuiAction(key({ name: "i", shift: true }))).toBe(
+      "add-kiro-idc-arn",
+    );
+    expect(decodeTuiAction(key({ name: "o" }))).toBe("add-kiro-json");
+    expect(decodeTuiAction(key({ name: "o", shift: true }))).toBe(
+      "add-kiro-export",
+    );
+    // j/k reserved for list navigation — must not steal move-down/up
+    expect(decodeTuiAction(key({ name: "j" }))).toBeUndefined();
+    expect(decodeTuiAction(key({ name: "k" }))).toBeUndefined();
+    expect(decodeTuiAction(key({ name: "c" }))).toBe("add-kiro-cli");
+    expect(decodeTuiAction(key({ name: "c", ctrl: true }))).toBe("quit");
   });
 });

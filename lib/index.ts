@@ -17,8 +17,16 @@ export type {
   RecordSuccessContext,
   ResolveModelsOptions,
   ProviderAdapter,
+  ProviderDescriptor,
+  HttpTransportAdapter,
+  ProviderTransport,
+  TransportProviderAdapter,
+  AnyProviderAdapter,
+  ProviderFetchContext,
+  FetchLike,
 } from "./core/adapter.js";
-export { isProviderAdapter } from "./core/adapter.js";
+export { assertNever, isProviderAdapter } from "./core/adapter.js";
+export { createProviderFetch } from "./core/provider-fetch.js";
 
 export type { SessionRequestOptions } from "./core/session-options.js";
 export {

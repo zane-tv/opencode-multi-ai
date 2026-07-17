@@ -1,0 +1,6 @@
+data: {"id":"conversation-1","object":"chat.completion.chunk","created":1700000000,"model":"claude-opus-4.8","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}
+
+data: {"id":"conversation-1","object":"chat.completion.chunk","created":1700000000,"model":"claude-opus-4.8","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":19998,"completion_tokens":2,"total_tokens":20000}}
+
+data: [DONE]
+

@@ -3,6 +3,7 @@ import {
   isProviderAdapter,
   type Classification,
   type ProviderAdapter,
+  type TransportProviderAdapter,
 } from "../lib/core/adapter.js";
 
 const XAI_API_HOST = "api.x.ai";
@@ -78,6 +79,45 @@ const xaiStub: ProviderAdapter = baseStub({
   },
 });
 
+const kiroStub: ProviderAdapter = baseStub({
+  id: "kiro-multi",
+  provider: "kiro",
+  displayName: "Kiro Multi-Account",
+  npmPackage: "@kirodotdev/ai-sdk-provider",
+  baseURL: "https://q.us-east-1.amazonaws.com",
+  dummyApiKey: "kiro-multi-dummy",
+  resolveUrl(input: string | URL): string {
+    return typeof input === "string" ? input : input.toString();
+  },
+});
+
+const kiroCustomStub: TransportProviderAdapter = {
+  id: "kiro-multi",
+  provider: "kiro",
+  displayName: "Kiro Multi-Account",
+  npmPackage: "@ai-sdk/openai-compatible",
+  baseURL: "https://q.us-east-1.amazonaws.com",
+  dummyApiKey: "kiro-multi-dummy",
+  async resolveModels() {
+    return {};
+  },
+  providerDefaultOptions() {
+    return {};
+  },
+  listSubtitle() {
+    return "";
+  },
+  detailLines() {
+    return [];
+  },
+  transport: {
+    kind: "custom",
+    createFetch() {
+      return async () => new Response("{}", { status: 200 });
+    },
+  },
+};
+
 /** Codex: rewrite host to chatgpt.com (never throw on foreign host). */
 const codexStub: ProviderAdapter = baseStub({
   id: "codex-multi",
@@ -97,15 +137,37 @@ const codexStub: ProviderAdapter = baseStub({
 });
 
 describe("ProviderAdapter interface", () => {
-  it("accepts two stubs that satisfy the total interface", () => {
-    // Compile-time: xaiStub/codexStub are typed as ProviderAdapter.
+  it("accepts three stubs that satisfy the total interface", () => {
     // Runtime: guard confirms required surface is present.
     expect(isProviderAdapter(xaiStub)).toBe(true);
     expect(isProviderAdapter(codexStub)).toBe(true);
+    expect(isProviderAdapter(kiroStub)).toBe(true);
+    expect(isProviderAdapter(kiroCustomStub)).toBe(true);
     expect(xaiStub.id).toBe("xai-multi");
     expect(xaiStub.provider).toBe("xai");
     expect(codexStub.id).toBe("codex-multi");
     expect(codexStub.provider).toBe("codex");
+    expect(kiroStub.id).toBe("kiro-multi");
+    expect(kiroStub.provider).toBe("kiro");
+  });
+
+  it("rejects an otherwise complete adapter with an unsupported id", () => {
+    expect(isProviderAdapter({ ...kiroStub, id: "kiro" })).toBe(false);
+  });
+
+  it("rejects canonical transports without their required factory", () => {
+    expect(
+      isProviderAdapter({
+        ...kiroCustomStub,
+        transport: { kind: "custom" },
+      }),
+    ).toBe(false);
+    expect(
+      isProviderAdapter({
+        ...kiroCustomStub,
+        id: "codex-multi",
+      }),
+    ).toBe(false);
   });
 
   it("fails isProviderAdapter when resolveUrl is missing", () => {

@@ -4,11 +4,12 @@
  * Single reference for install docs, migration, and support. Values are
  * descriptive constants (not live readers) so this module stays free of I/O.
  *
- * Unified store (v2):
+ * Unified store (v3):
  *   ~/.config/opencode/multi-ai-accounts.json
  *   ~/.config/opencode/multi-ai-settings.json   (locale, …)
  *   ~/.config/opencode/multi-ai-models-xai.json
  *   ~/.config/opencode/multi-ai-models-codex.json
+ *   ~/.config/opencode/multi-ai-models-kiro.json
  *
  * Legacy (read by migrate, never deleted by install):
  *   multi-xai-accounts.json / multi-codex-accounts.json
@@ -16,8 +17,8 @@
  *
  * OpenCode host config (written by scripts/install.ts):
  *   ~/.config/opencode/opencode.json   (or OPENCODE_CONFIG)
- *   providers: xai-multi, codex-multi  (never built-in xai / openai)
- *   plugin: both lib/plugin/xai.ts + lib/plugin/codex.ts
+ *   providers: xai-multi, codex-multi, kiro-multi  (never built-in xai / openai)
+ *   plugin: package root (named exports xai + codex + kiro)
  *
  * i18n already multi-ai-settings — see lib/core/i18n.ts (MULTI_AI_LANG with
  * MULTI_XAI_LANG / MULTI_CODEX_LANG fallbacks).
@@ -25,13 +26,14 @@
 
 /** On-disk files under ~/.config/opencode/ that this package owns or migrates. */
 export const SETTINGS_FILES = {
-  /** Unified v2 account pool (both providers). */
+  /** Unified v3 account pool (all providers). */
   accounts: "multi-ai-accounts.json",
   /** UI settings (locale, …). */
   settings: "multi-ai-settings.json",
   /** Per-provider model catalog caches. */
   modelsXai: "multi-ai-models-xai.json",
   modelsCodex: "multi-ai-models-codex.json",
+  modelsKiro: "multi-ai-models-kiro.json",
   /** Legacy v1 pools (migration source; left in place + optional .bak). */
   legacyAccountsXai: "multi-xai-accounts.json",
   legacyAccountsCodex: "multi-codex-accounts.json",
@@ -87,6 +89,13 @@ export const SETTINGS_PROVIDERS = {
     pluginModule: "lib/plugin/codex.ts",
     builtinNever: "openai",
   },
+  kiro: {
+    id: "kiro-multi",
+    npm: "@ai-sdk/openai-compatible",
+    displayName: "Kiro Multi-Account",
+    pluginModule: "lib/plugin/kiro.ts",
+    builtinNever: null,
+  },
 } as const;
 
 /** CLI bin names installed by scripts/install-cli.sh. */
@@ -94,11 +103,13 @@ export const SETTINGS_CLI_BINS = [
   "op-ai",
   "op-xai",
   "op-codex",
+  "op-kiro",
   "opencode-multi-ai",
   "opencode-multi-xai",
   "opencode-multi-codex",
   "xai-multi",
   "codex-multi",
+  "kiro-multi",
 ] as const;
 
 /** Keys currently persisted in multi-ai-settings.json. */

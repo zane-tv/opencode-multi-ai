@@ -23,6 +23,7 @@ import {
 
 import {
   AccountManager,
+  getAccountManager,
   isSelectable,
   resetAccountManager,
 } from "../lib/core/accounts.js";
@@ -39,6 +40,7 @@ import {
 import type { Classification, ProviderAdapter } from "../lib/core/adapter.js";
 import * as xaiConstants from "../lib/providers/xai/constants.js";
 import * as codexConstants from "../lib/providers/codex/constants.js";
+import * as kiroConstants from "../lib/providers/kiro/constants.js";
 
 const HOUR = 3_600_000;
 const LIB_ROOT = path.resolve(
@@ -103,7 +105,7 @@ describe("anti-patterns: dead only via markDeadCandidate / invalid_grant", () =>
   it("markDeadCandidate is the only management path that sets subscriptionStatus=dead", async () => {
     await saveAccounts(
       {
-        version: 2,
+        version: 3,
         accounts: [makeAccount("xai", "a0"), makeAccount("codex", "c0")],
         sticky: {},
       },
@@ -142,7 +144,7 @@ describe("anti-patterns: prune never includes quota-exhausted only", () => {
   it("prunableAccounts returns only dead or flagged — not quota-exhausted alone", async () => {
     await saveAccounts(
       {
-        version: 2,
+        version: 3,
         accounts: [
           makeAccount("xai", "healthy"),
           makeAccount("xai", "dead", { subscriptionStatus: "dead" }),
@@ -234,9 +236,20 @@ describe("anti-patterns: plugin modules export only default", () => {
     );
   });
 
-  it("package root re-exports both PluginModules as named exports (no default)", async () => {
+  it("lib/plugin/kiro.ts exports only default PluginModule", async () => {
+    const mod = await import("../lib/plugin/kiro.js");
+    expect(Object.keys(mod).sort()).toEqual(["default"]);
+    expect(mod.default).toEqual(
+      expect.objectContaining({
+        id: "kiro-multi",
+        server: expect.any(Function),
+      }),
+    );
+  });
+
+  it("package root re-exports all PluginModules as named exports (no default)", async () => {
     const mod = await import("../index.js");
-    expect(Object.keys(mod).sort()).toEqual(["codex", "xai"]);
+    expect(Object.keys(mod).sort()).toEqual(["codex", "kiro", "xai"]);
     expect(mod.xai).toEqual(
       expect.objectContaining({
         id: "xai-multi",
@@ -249,26 +262,34 @@ describe("anti-patterns: plugin modules export only default", () => {
         server: expect.any(Function),
       }),
     );
+    expect(mod.kiro).toEqual(
+      expect.objectContaining({
+        id: "kiro-multi",
+        server: expect.any(Function),
+      }),
+    );
     expect((mod as { default?: unknown }).default).toBeUndefined();
   });
 });
 
 describe("anti-patterns: providers never register built-in ids", () => {
-  it("custom provider ids are xai-multi / codex-multi, never built-in xai/openai", () => {
+  it("custom provider ids are xai-multi / codex-multi / kiro-multi, never built-ins", () => {
     expect(xaiConstants.PROVIDER_ID).toBe("xai-multi");
     expect(xaiConstants.PROVIDER_ID).not.toBe("xai");
     expect(codexConstants.PROVIDER_ID).toBe("codex-multi");
     expect(codexConstants.PROVIDER_ID).not.toBe("openai");
+    expect(kiroConstants.PROVIDER_ID).toBe("kiro-multi");
+    expect(kiroConstants.PROVIDER_ID).not.toBe("kiro");
   });
 
   it("plugin config hooks do not overwrite built-in xai or openai keys", async () => {
     const storePath = tmpStorePath();
     resetAccountManager();
-    // Ensure plugins resolve manager without clobbering global home store.
-    new AccountManager(storePath);
+    getAccountManager(storePath);
 
     const xaiMod = await import("../lib/plugin/xai.js");
     const codexMod = await import("../lib/plugin/codex.js");
+    const kiroMod = await import("../lib/plugin/kiro.js");
     const input = {
       client: {} as never,
       project: {} as never,
@@ -281,9 +302,11 @@ describe("anti-patterns: providers never register built-in ids", () => {
 
     const xaiHooks = await xaiMod.default.server(input);
     const codexHooks = await codexMod.default.server(input);
+    const kiroHooks = await kiroMod.default.server(input);
 
     expect(xaiHooks.auth?.provider).toBe("xai-multi");
     expect(codexHooks.auth?.provider).toBe("codex-multi");
+    expect(kiroHooks.auth?.provider).toBe("kiro-multi");
 
     const cfg: { provider?: Record<string, unknown> } = {
       provider: {
@@ -293,11 +316,13 @@ describe("anti-patterns: providers never register built-in ids", () => {
     };
     await xaiHooks.config?.(cfg as never);
     await codexHooks.config?.(cfg as never);
+    await kiroHooks.config?.(cfg as never);
 
     expect(cfg.provider?.xai).toEqual({ keep: true });
     expect(cfg.provider?.openai).toEqual({ keep: true });
     expect(cfg.provider?.["xai-multi"]).toBeDefined();
     expect(cfg.provider?.["codex-multi"]).toBeDefined();
+    expect(cfg.provider?.["kiro-multi"]).toBeDefined();
 
     resetAccountManager();
     await fs.promises.rm(storePath, { force: true }).catch(() => undefined);
@@ -351,7 +376,7 @@ describe("anti-patterns: selectAccount never crosses provider", () => {
   it("colliding accountIds stay provider-scoped on select", async () => {
     await saveAccounts(
       {
-        version: 2,
+        version: 3,
         accounts: [
           makeAccount("xai", "shared", { priority: 10 }),
           makeAccount("codex", "shared", { priority: 99 }),
@@ -503,14 +528,14 @@ describe("anti-patterns: rotation-fetch does not rotate on unknown-client-error"
 });
 
 describe("anti-patterns: no activeIndex in AccountStorageSchema (sticky only)", () => {
-  it("v2 schema has sticky map and strips/ignores activeIndex", () => {
+  it("v3 schema has sticky map and strips/ignores activeIndex", () => {
     const parsed = AccountStorageSchema.parse({
-      version: 2,
+      version: 3,
       accounts: [],
       sticky: { xai: "a0" },
       activeIndex: 3,
     });
-    expect(parsed.version).toBe(2);
+    expect(parsed.version).toBe(3);
     expect(parsed.sticky).toEqual({ xai: "a0" });
     expect("activeIndex" in parsed).toBe(false);
     expect(

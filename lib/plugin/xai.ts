@@ -3,7 +3,7 @@ import type { Plugin } from "@opencode-ai/plugin";
 import { toRotationManager } from "../core/account-rotation.js";
 import { getAccountManager, type AccountManager } from "../core/accounts.js";
 import { logger } from "../core/logger.js";
-import { createRotationFetch } from "../core/rotation-fetch.js";
+import { createProviderFetch } from "../core/provider-fetch.js";
 import { rememberSessionOptions } from "../core/session-options.js";
 import { xaiAdapter } from "../providers/xai/adapter.js";
 import { generatePkce, generateState } from "../providers/xai/auth/pkce.js";
@@ -19,7 +19,15 @@ import {
   type DeviceCodePrompt,
 } from "../providers/xai/auth/device-code.js";
 import { finalizeLoginToPool } from "../providers/xai/auth/login.js";
-import { PROVIDER_ID, XAI_API_BASE } from "../providers/xai/constants.js";
+import {
+  bootstrapHostAuthIfNeeded,
+  ensureHostAuthAfterLogin,
+} from "../providers/codex/auth/host-auth.js";
+import {
+  DUMMY_API_KEY,
+  PROVIDER_ID,
+  XAI_API_BASE,
+} from "../providers/xai/constants.js";
 import { resolveXaiMultiModels } from "../providers/xai/models-sync.js";
 
 /**
@@ -76,6 +84,8 @@ async function finalizeLogin(
     );
   }
 
+  ensureHostAuthAfterLogin(PROVIDER_ID, accountId, DUMMY_API_KEY);
+
   return {
     type: "success",
     provider: PROVIDER_ID,
@@ -88,9 +98,10 @@ async function finalizeLogin(
 
 const plugin: Plugin = async () => {
   logger.debug("multi-xai plugin loading (server entry)");
+  bootstrapHostAuthIfNeeded(PROVIDER_ID, DUMMY_API_KEY);
   const manager = getAccountManager();
   await manager.load();
-  const customFetch = createRotationFetch(
+  const customFetch = createProviderFetch(
     xaiAdapter,
     toRotationManager(manager, "xai"),
   );
@@ -111,11 +122,14 @@ const plugin: Plugin = async () => {
       }
       if (p.name === undefined) p.name = xaiAdapter.displayName;
       if (p.options === undefined || typeof p.options !== "object") {
-        p.options = { baseURL: XAI_API_BASE };
+        p.options = { baseURL: XAI_API_BASE, apiKey: DUMMY_API_KEY };
       } else {
         const opts = p.options as Record<string, unknown>;
         if (opts.baseURL === undefined) opts.baseURL = XAI_API_BASE;
+        if (opts.apiKey === undefined) opts.apiKey = DUMMY_API_KEY;
       }
+      // Keep host auth as api placeholder so loader + customFetch always run.
+      bootstrapHostAuthIfNeeded(PROVIDER_ID, DUMMY_API_KEY);
       // Cold start: cache/defaults only — no models.dev network fetch.
       // Network sync runs after successful auth login (finalizeLogin).
       const existing =

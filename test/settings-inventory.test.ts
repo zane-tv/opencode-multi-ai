@@ -9,15 +9,18 @@ import {
 } from "../lib/core/settings-inventory.js";
 
 describe("settings inventory", () => {
-  it("documents unified v2 files and both providers", () => {
+  it("documents unified files and all three providers", () => {
     expect(SETTINGS_FILES.accounts).toBe("multi-ai-accounts.json");
     expect(SETTINGS_FILES.settings).toBe("multi-ai-settings.json");
     expect(SETTINGS_FILES.modelsXai).toBe("multi-ai-models-xai.json");
     expect(SETTINGS_FILES.modelsCodex).toBe("multi-ai-models-codex.json");
+    expect(SETTINGS_FILES.modelsKiro).toBe("multi-ai-models-kiro.json");
     expect(SETTINGS_PROVIDERS.xai.id).toBe("xai-multi");
     expect(SETTINGS_PROVIDERS.codex.id).toBe("codex-multi");
+    expect(SETTINGS_PROVIDERS.kiro.id).toBe("kiro-multi");
     expect(SETTINGS_PROVIDERS.xai.builtinNever).toBe("xai");
     expect(SETTINGS_PROVIDERS.codex.builtinNever).toBe("openai");
+    expect(SETTINGS_PROVIDERS.kiro.builtinNever).toBeNull();
   });
 
   it("lists MULTI_AI_* env with historical fallbacks", () => {
@@ -33,7 +36,9 @@ describe("settings inventory", () => {
     expect(SETTINGS_CLI_BINS).toContain("op-ai");
     expect(SETTINGS_CLI_BINS).toContain("op-xai");
     expect(SETTINGS_CLI_BINS).toContain("op-codex");
+    expect(SETTINGS_CLI_BINS).toContain("op-kiro");
     expect(SETTINGS_CLI_BINS).toContain("opencode-multi-ai");
+    expect(SETTINGS_CLI_BINS).toContain("kiro-multi");
     expect(SETTINGS_FILE_KEYS.lang).toBe("lang");
   });
 });

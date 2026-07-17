@@ -5,7 +5,12 @@ import path from "node:path";
 
 import { AUTH_FETCH_TIMEOUT_MS, defaultStoragePath } from "./paths.js";
 import { logger } from "./logger.js";
-import { AccountStorageSchema, type AccountStorage } from "./schemas.js";
+import {
+  AccountStorageSchema,
+  AccountStorageV2Schema,
+  type AccountStorage,
+  type AccountStorageV2,
+} from "./schemas.js";
 
 /**
  * Unified multi-provider account pool persistence.
@@ -14,12 +19,20 @@ import { AccountStorageSchema, type AccountStorage } from "./schemas.js";
  * - chmod 600 so refresh tokens are not world-readable.
  * - Never touches OpenCode's own `auth.json`.
  * - Ported from opencode-multi-codex hardened storage (stale-lock reclaim with
- *   `.break` guard + identity fence). Schema is v2 (`sticky` map, not
+ *   `.break` guard + identity fence). Schema is v3 (`sticky` map, not
  *   `activeIndex`).
  */
 
 function emptyStorage(): AccountStorage {
-  return { version: 2, accounts: [], sticky: {} };
+  return { version: 3, accounts: [], sticky: {} };
+}
+
+export function migrateV2ToV3(v2: AccountStorageV2): AccountStorage {
+  return {
+    version: 3,
+    accounts: v2.accounts,
+    sticky: { ...v2.sticky },
+  };
 }
 
 function resolvePath(p?: string): string {
@@ -29,23 +42,69 @@ function resolvePath(p?: string): string {
 /** Number of timestamped backups to keep; older ones are pruned. */
 const MAX_BACKUPS = 10;
 
-/**
- * Migration stub. Future storage versions get upgraded here before validation.
- * Currently only version 2 is accepted by the schema; an unknown version is
- * left untouched and will be REJECTED by schema validation.
- */
-function migrate(raw: unknown): unknown {
-  if (raw && typeof raw === "object" && "version" in raw) {
-    const version = (raw as { version: unknown }).version;
-    if (version !== 2) {
-      // Future migrations would switch on version here. Until then this is an
-      // unsupported version and validation below will fail.
-      logger.warn(
-        `unsupported storage version ${String(version)}; no migration exists, validation will fail`,
-      );
-    }
+type AccountStoreDocument = {
+  readonly json: unknown;
+};
+
+async function readAccountStore(
+  file: string,
+): Promise<AccountStoreDocument | null> {
+  let text: string;
+  try {
+    text = await fs.readFile(file, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err;
   }
-  return raw;
+
+  try {
+    const json: unknown = JSON.parse(text);
+    return { json };
+  } catch (err) {
+    throw new Error(
+      `account store at ${file} is not valid JSON: ${(err as Error).message}`,
+    );
+  }
+}
+
+function validationError(file: string, message: string): Error {
+  return new Error(`account store at ${file} failed validation: ${message}`);
+}
+
+async function backupV2AccountStore(file: string): Promise<void> {
+  const backup = `${file}.v2.bak`;
+  await fs.copyFile(file, backup);
+  await fs.chmod(backup, 0o600);
+  logger.debug(`backed up v2 account store to ${backup}`);
+}
+
+async function loadAccountsUnderLock(file: string): Promise<AccountStorage> {
+  const document = await readAccountStore(file);
+  if (!document) return emptyStorage();
+
+  const current = AccountStorageSchema.safeParse(document.json);
+  if (current.success) return current.data;
+
+  const previous = AccountStorageV2Schema.safeParse(document.json);
+  if (!previous.success) {
+    throw validationError(file, current.error.message);
+  }
+
+  const migrated = AccountStorageSchema.parse(migrateV2ToV3(previous.data));
+  await backupV2AccountStore(file);
+  await saveAccounts(migrated, file);
+  return migrated;
+}
+
+export async function upgradeAccountsStorageIfNeeded(
+  p?: string,
+): Promise<void> {
+  const file = resolvePath(p);
+  const document = await readAccountStore(file);
+  if (!document) return;
+  if (!AccountStorageV2Schema.safeParse(document.json).success) return;
+
+  await withAccountStoreLock(file, () => loadAccountsUnderLock(file));
 }
 
 /**
@@ -54,34 +113,20 @@ function migrate(raw: unknown): unknown {
  */
 export async function loadAccounts(p?: string): Promise<AccountStorage> {
   const file = resolvePath(p);
-  let text: string;
-  try {
-    text = await fs.readFile(file, "utf8");
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-      logger.debug(`no account store at ${file}; returning empty pool`);
-      return emptyStorage();
-    }
-    throw err;
+  const document = await readAccountStore(file);
+  if (!document) {
+    logger.debug(`no account store at ${file}; returning empty pool`);
+    return emptyStorage();
   }
 
-  let json: unknown;
-  try {
-    json = JSON.parse(text);
-  } catch (err) {
-    throw new Error(
-      `account store at ${file} is not valid JSON: ${(err as Error).message}`,
-    );
+  const current = AccountStorageSchema.safeParse(document.json);
+  if (current.success) return current.data;
+
+  if (AccountStorageV2Schema.safeParse(document.json).success) {
+    return withAccountStoreLock(file, () => loadAccountsUnderLock(file));
   }
 
-  const migrated = migrate(json);
-  const parsed = AccountStorageSchema.safeParse(migrated);
-  if (!parsed.success) {
-    throw new Error(
-      `account store at ${file} failed validation: ${parsed.error.message}`,
-    );
-  }
-  return parsed.data;
+  throw validationError(file, current.error.message);
 }
 
 /**
@@ -519,7 +564,7 @@ async function reclaimIfStale(lockPath: string): Promise<boolean> {
 
     if (reclaimTestHook) await reclaimTestHook("before-delete");
     fsSync.rmSync(lockPath, { force: true });
-    logger.warn(
+    logger.debug(
       `reclaimed stale lock ${lockPath} (mtime age ${Math.round(observed.mtimeAge)}ms > ${STALE_LOCK_MS}ms)`,
     );
     return true;
@@ -595,16 +640,25 @@ export async function withCrossProcessTransaction<T>(
   p?: string,
 ): Promise<T> {
   const file = resolvePath(p);
+  return withAccountStoreLock(file, async () => {
+    const storage = await loadAccountsUnderLock(file);
+    const result = await fn(storage);
+    await saveAccounts(storage, file);
+    return result;
+  });
+}
+
+async function withAccountStoreLock<T>(
+  file: string,
+  fn: () => Promise<T>,
+): Promise<T> {
   const lockPath = `${file}${LOCK_SUFFIX}`;
   // Compose with the in-process chain so a single process serializes its own
   // transactions and never contends with itself for the file lock.
   return chainOnPath(file, async () => {
     const owner = await acquireLock(lockPath);
     try {
-      const storage = await loadAccounts(file);
-      const result = await fn(storage);
-      await saveAccounts(storage, file);
-      return result;
+      return await fn();
     } finally {
       await releaseLock(lockPath, owner);
     }

@@ -3,15 +3,23 @@
  * No OpenTUI, no i18n, no mutable globals — unit-testable interaction semantics.
  */
 
+import type { ProviderKind } from "../core/schemas.js";
+
 export type TuiAction =
   | "quit"
   | "escape"
   | "tab-xai"
   | "tab-codex"
+  | "tab-kiro"
   | "tab-next"
   | "toggle-locale"
   | "add-device"
   | "add-browser"
+  | "add-kiro-api-key"
+  | "add-kiro-idc-arn"
+  | "add-kiro-json"
+  | "add-kiro-export"
+  | "add-kiro-cli"
   | "switch"
   | "prio-up"
   | "prio-down"
@@ -25,6 +33,7 @@ export type TuiAction =
   | "unflag"
   | "remove"
   | "prune"
+  | "clean-dead"
   | "refresh"
   | "refresh-all"
   | "toggle-live"
@@ -70,6 +79,41 @@ export const TUI_BINDINGS: readonly TuiBinding[] = Object.freeze([
     action: "add-browser",
     labelKey: "add_browser",
     descKey: "desc_add_browser",
+    available: true,
+  },
+  {
+    key: "i",
+    action: "add-kiro-api-key",
+    labelKey: "add_kiro_api_key",
+    descKey: "desc_add_kiro_api_key",
+    available: true,
+  },
+  {
+    key: "I",
+    action: "add-kiro-idc-arn",
+    labelKey: "add_kiro_idc_arn",
+    descKey: "desc_add_kiro_idc_arn",
+    available: true,
+  },
+  {
+    key: "o",
+    action: "add-kiro-json",
+    labelKey: "add_kiro_json",
+    descKey: "desc_add_kiro_json",
+    available: true,
+  },
+  {
+    key: "O",
+    action: "add-kiro-export",
+    labelKey: "add_kiro_export",
+    descKey: "desc_add_kiro_export",
+    available: true,
+  },
+  {
+    key: "c",
+    action: "add-kiro-cli",
+    labelKey: "add_kiro_cli",
+    descKey: "desc_add_kiro_cli",
     available: true,
   },
   {
@@ -164,6 +208,13 @@ export const TUI_BINDINGS: readonly TuiBinding[] = Object.freeze([
     available: true,
   },
   {
+    key: "P",
+    action: "clean-dead",
+    labelKey: "clean_dead",
+    descKey: "desc_clean_dead",
+    available: true,
+  },
+  {
     key: "r",
     action: "refresh",
     labelKey: "refresh",
@@ -216,11 +267,12 @@ export const TUI_BINDINGS: readonly TuiBinding[] = Object.freeze([
 
 export type ConfirmationState =
   | { kind: "none" }
-  | { kind: "remove"; provider: "xai" | "codex"; accountId: string }
-  | { kind: "prune"; provider: "xai" | "codex" };
+  | { kind: "remove"; provider: ProviderKind; accountId: string }
+  | { kind: "prune"; provider: ProviderKind }
+  | { kind: "clean-dead"; provider: ProviderKind };
 
 export type ConfirmationContext = {
-  provider: "xai" | "codex";
+  provider: ProviderKind;
   accountId?: string;
 };
 
@@ -300,9 +352,9 @@ export function decodeTuiAction(key: TuiKeyEvent): TuiAction | undefined {
     }
   }
 
-  // Digit tabs
-  if (name === "1" || seq === "1") return "tab-xai";
-  if (name === "2" || seq === "2") return "tab-codex";
+  if (name === "1" || seq === "1") return "tab-codex";
+  if (name === "2" || seq === "2") return "tab-xai";
+  if (name === "3" || seq === "3") return "tab-kiro";
 
   // Letter actions — shift distinguishes A/R/L
   const letter =
@@ -326,12 +378,16 @@ export function decodeTuiAction(key: TuiKeyEvent): TuiAction | undefined {
   if (letter === "f") return "flag";
   if (letter === "u") return "unflag";
   if (letter === "x") return "remove";
-  if (letter === "p") return "prune";
+  if (letter === "p") return shift || seq === "P" ? "clean-dead" : "prune";
   if (letter === "v") return "toggle-live";
 
   if (letter === "a") return shift || seq === "A" ? "add-browser" : "add-device";
+  if (letter === "i") return shift || seq === "I" ? "add-kiro-idc-arn" : "add-kiro-api-key";
+  if (letter === "o") return shift || seq === "O" ? "add-kiro-export" : "add-kiro-json";
+  if (letter === "c" && !ctrl) return "add-kiro-cli";
   if (letter === "r") return shift || seq === "R" ? "refresh-all" : "refresh";
   if (letter === "l") return shift || seq === "L" ? "reload" : "label";
+  if (letter === "j" || letter === "k") return undefined;
 
   return undefined;
 }
@@ -343,7 +399,7 @@ export function decodeTuiAction(key: TuiKeyEvent): TuiAction | undefined {
  */
 export function advanceConfirmation(
   current: ConfirmationState,
-  action: "remove" | "prune",
+  action: "remove" | "prune" | "clean-dead",
   ctx: ConfirmationContext,
 ): ConfirmationAdvanceResult {
   if (action === "remove") {
@@ -368,7 +424,16 @@ export function advanceConfirmation(
     };
   }
 
-  // prune
+  if (action === "clean-dead") {
+    if (current.kind === "clean-dead" && current.provider === ctx.provider) {
+      return { next: { kind: "none" }, confirmed: true };
+    }
+    return {
+      next: { kind: "clean-dead", provider: ctx.provider },
+      confirmed: false,
+    };
+  }
+
   if (current.kind === "prune" && current.provider === ctx.provider) {
     return { next: { kind: "none" }, confirmed: true };
   }
@@ -419,4 +484,176 @@ export function rowIndexFromMouse(
   const index = scrollOffset + row;
   if (index < 0 || index >= count) return -1;
   return index;
+}
+
+export type ActionMenuGroupId =
+  | "account"
+  | "edit"
+  | "add"
+  | "quota"
+  | "danger";
+
+export type ActionMenuLevel =
+  | { kind: "main" }
+  | { kind: "group"; group: ActionMenuGroupId };
+
+export type ActionMenuItem =
+  | {
+      kind: "group";
+      id: ActionMenuGroupId;
+      labelKey: string;
+      descKey: string;
+      keys: string;
+    }
+  | { kind: "back"; labelKey: string }
+  | { kind: "action"; binding: TuiBinding }
+  | { kind: "top"; action: TuiAction; binding: TuiBinding };
+
+export type ActionMenuSelectValue =
+  | { type: "open"; group: ActionMenuGroupId }
+  | { type: "back" }
+  | { type: "run"; action: TuiAction };
+
+const GROUP_ACTIONS: Record<ActionMenuGroupId, readonly TuiAction[]> = {
+  account: ["switch", "enable", "disable", "prio-up", "prio-down", "prio-top"],
+  edit: ["label", "tags", "note"],
+  add: ["add-device", "add-browser"],
+  quota: ["refresh", "refresh-all", "toggle-live", "reload"],
+  danger: ["flag", "unflag", "remove", "prune", "clean-dead"],
+};
+
+const KIRO_ADD_ACTIONS: readonly TuiAction[] = [
+  "add-device",
+  "add-kiro-api-key",
+  "add-kiro-idc-arn",
+  "add-kiro-json",
+  "add-kiro-export",
+  "add-kiro-cli",
+];
+
+const XAI_CODEX_ADD_ACTIONS: readonly TuiAction[] = [
+  "add-device",
+  "add-browser",
+];
+
+export function addActionsForProvider(
+  provider: ProviderKind | undefined,
+): readonly TuiAction[] {
+  if (provider === "kiro") return KIRO_ADD_ACTIONS;
+  return XAI_CODEX_ADD_ACTIONS;
+}
+
+const MAIN_TOP_ACTIONS: readonly TuiAction[] = ["help", "toggle-locale", "quit"];
+
+export const ACTION_MENU_GROUP_META: Record<
+  ActionMenuGroupId,
+  { labelKey: string; descKey: string; keys: string }
+> = {
+  account: {
+    labelKey: "menu_account",
+    descKey: "menu_desc_account",
+    keys: "s e d [ ] {",
+  },
+  edit: {
+    labelKey: "menu_edit",
+    descKey: "menu_desc_edit",
+    keys: "l t n",
+  },
+  add: {
+    labelKey: "menu_add",
+    descKey: "menu_desc_add",
+    keys: "a A",
+  },
+  quota: {
+    labelKey: "menu_quota",
+    descKey: "menu_desc_quota",
+    keys: "r R v L",
+  },
+  danger: {
+    labelKey: "menu_danger",
+    descKey: "menu_desc_danger",
+    keys: "f u x p P",
+  },
+};
+
+function bindingForAction(action: TuiAction): TuiBinding | undefined {
+  return TUI_BINDINGS.find((b) => b.action === action && b.available);
+}
+
+export function createActionMenuLevel(): ActionMenuLevel {
+  return { kind: "main" };
+}
+
+export function openActionMenuGroup(
+  _level: ActionMenuLevel,
+  group: ActionMenuGroupId,
+): ActionMenuLevel {
+  return { kind: "group", group };
+}
+
+export function actionMenuBack(level: ActionMenuLevel): ActionMenuLevel {
+  if (level.kind === "group") return { kind: "main" };
+  return level;
+}
+
+export function actionMenuItems(
+  level: ActionMenuLevel,
+  provider?: ProviderKind,
+): ActionMenuItem[] {
+  if (level.kind === "main") {
+    const items: ActionMenuItem[] = [];
+    for (const id of Object.keys(GROUP_ACTIONS) as ActionMenuGroupId[]) {
+      const meta = ACTION_MENU_GROUP_META[id];
+      const keys =
+        id === "add" && provider === "kiro"
+          ? "a i I o O c"
+          : meta.keys;
+      const descKey =
+        id === "add" && provider === "kiro"
+          ? "menu_desc_add_kiro"
+          : meta.descKey;
+      items.push({
+        kind: "group",
+        id,
+        labelKey: meta.labelKey,
+        descKey,
+        keys,
+      });
+    }
+    for (const action of MAIN_TOP_ACTIONS) {
+      const binding = bindingForAction(action);
+      if (binding) items.push({ kind: "top", action, binding });
+    }
+    return items;
+  }
+
+  const items: ActionMenuItem[] = [{ kind: "back", labelKey: "menu_back" }];
+  const actions =
+    level.group === "add"
+      ? addActionsForProvider(provider)
+      : GROUP_ACTIONS[level.group];
+  for (const action of actions) {
+    const binding = bindingForAction(action);
+    if (binding) items.push({ kind: "action", binding });
+  }
+  return items;
+}
+
+export function actionMenuSelectValue(
+  item: ActionMenuItem,
+): ActionMenuSelectValue {
+  switch (item.kind) {
+    case "group":
+      return { type: "open", group: item.id };
+    case "back":
+      return { type: "back" };
+    case "action":
+      return { type: "run", action: item.binding.action };
+    case "top":
+      return { type: "run", action: item.action };
+  }
+}
+
+export function isActionMenuGroupId(v: string): v is ActionMenuGroupId {
+  return v in GROUP_ACTIONS;
 }

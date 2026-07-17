@@ -6,9 +6,9 @@
 import type {
   BuildHeadersContext,
   Classification,
-  ProviderAdapter,
   RecordSuccessContext,
   ResolveModelsOptions,
+  TransportProviderAdapter,
   TransformBodyContext,
 } from "../../core/adapter.js";
 import {
@@ -18,6 +18,7 @@ import {
 import { formatUntil } from "../../core/format-time.js";
 import { getSessionOptions, sessionIdFromHeaders } from "../../core/session-options.js";
 import {
+  DUMMY_API_KEY,
   PROVIDER_ID,
   XAI_API_BASE,
   XAI_API_HOST,
@@ -41,8 +42,6 @@ import {
   formatPlanLimit,
   resolveXaiRemainingPercent,
 } from "./request/plan.js";
-
-const DUMMY_API_KEY = "multi-xai-dummy-key";
 
 function toUrl(input: string | URL): URL {
   return typeof input === "string" ? new URL(input) : new URL(input.href);
@@ -246,7 +245,7 @@ async function probeXaiQuota(
   return out;
 }
 
-export const xaiAdapter: ProviderAdapter = {
+export const xaiAdapter: TransportProviderAdapter = {
   id: PROVIDER_ID,
   provider: "xai",
   displayName: "Grok Multi-Account",
@@ -254,12 +253,6 @@ export const xaiAdapter: ProviderAdapter = {
   baseURL: XAI_API_BASE,
   dummyApiKey: DUMMY_API_KEY,
 
-  resolveUrl: resolveXaiUrl,
-  buildHeaders: buildXaiHeaders,
-  transformBody: transformXaiBody,
-  classifyResponse: classifyXaiHttp,
-  classifyThrownError: classifyXaiThrownError,
-  recordSuccess: recordXaiSuccess,
   resolveModels: (opts: ResolveModelsOptions) =>
     resolveXaiMultiModels({
       accessToken: opts.accessToken,
@@ -271,5 +264,13 @@ export const xaiAdapter: ProviderAdapter = {
   listSubtitle,
   detailLines,
   probeQuota: probeXaiQuota,
-  // hostAuth: undefined (codex only)
+  transport: {
+    kind: "http",
+    resolveUrl: resolveXaiUrl,
+    buildHeaders: buildXaiHeaders,
+    transformBody: transformXaiBody,
+    classifyResponse: classifyXaiHttp,
+    classifyThrownError: classifyXaiThrownError,
+    recordSuccess: recordXaiSuccess,
+  },
 };

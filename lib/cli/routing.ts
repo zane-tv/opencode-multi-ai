@@ -5,6 +5,8 @@
 
 import type { ProviderKind } from "../core/schemas.js";
 
+type CliProviderKind = ProviderKind;
+
 export type CliCommand =
   | "help"
   | "tui"
@@ -26,7 +28,8 @@ export type CliCommand =
   | "flag"
   | "unflag"
   | "priority"
-  | "prune";
+  | "prune"
+  | "clean-dead";
 
 export const SHARED_COMMANDS = [
   "help",
@@ -49,9 +52,12 @@ export const SHARED_COMMANDS = [
   "unflag",
   "priority",
   "prune",
+  "clean-dead",
 ] as const satisfies readonly CliCommand[];
 
 export const CODEX_ONLY_COMMANDS = ["import"] as const satisfies readonly CliCommand[];
+
+export const IMPORT_PROVIDERS = ["codex", "kiro"] as const satisfies readonly ProviderKind[];
 
 /** Commands that may run without --provider when argv0 is op-ai (show both). */
 export const PROVIDER_OPTIONAL_COMMANDS = new Set<string>([
@@ -80,6 +86,7 @@ export const PROVIDER_REQUIRED_COMMANDS = new Set<string>([
   "unflag",
   "priority",
   "prune",
+  "clean-dead",
 ]);
 
 /**
@@ -88,7 +95,9 @@ export const PROVIDER_REQUIRED_COMMANDS = new Set<string>([
  * - op-codex / codex-multi / opencode-multi-codex → codex
  * - op-ai / opencode-multi-ai / bare scripts/cli.ts → undefined (use --provider)
  */
-export function resolveProviderFromArgv0(argv0: string): ProviderKind | undefined {
+export function resolveProviderFromArgv0(
+  argv0: string,
+): CliProviderKind | undefined {
   const base = argv0
     .replace(/\\/g, "/")
     .split("/")
@@ -115,17 +124,26 @@ export function resolveProviderFromArgv0(argv0: string): ProviderKind | undefine
   ) {
     return "codex";
   }
+  if (
+    base.includes("op-kiro") ||
+    base.includes("kiro-multi") ||
+    base === "opencode-multi-kiro" ||
+    base.endsWith("multi-kiro")
+  ) {
+    return "kiro";
+  }
   return undefined;
 }
 
 export function parseProviderFlag(
   flags: Record<string, string | boolean>,
-): ProviderKind | undefined {
+): CliProviderKind | undefined {
   const raw = flags.provider;
   if (raw === undefined || raw === true) return undefined;
   const v = String(raw).trim().toLowerCase();
   if (v === "xai" || v === "x" || v === "grok" || v === "supergrok") return "xai";
   if (v === "codex" || v === "c" || v === "chatgpt" || v === "openai") return "codex";
+  if (v === "kiro" || v === "k" || v === "codewhisperer") return "kiro";
   return undefined;
 }
 
@@ -136,7 +154,7 @@ export function parseProviderFlag(
 export function resolveProvider(opts: {
   argv0: string;
   flags: Record<string, string | boolean>;
-}): ProviderKind | undefined {
+}): CliProviderKind | undefined {
   const fromArgv0 = resolveProviderFromArgv0(opts.argv0);
   if (fromArgv0) return fromArgv0;
   return parseProviderFlag(opts.flags);
@@ -190,6 +208,7 @@ export function toolNameFor(
   command: string,
 ): string {
   if (command === "quota") return `${provider}-limits`;
+  if (command === "clean-dead") return `${provider}-clean-dead`;
   return `${provider}-${command}`;
 }
 
@@ -199,13 +218,12 @@ export function isKnownCommand(
 ): boolean {
   if ((SHARED_COMMANDS as readonly string[]).includes(command)) return true;
   if (
-    provider === "codex" &&
-    (CODEX_ONLY_COMMANDS as readonly string[]).includes(command)
+    command === "import" &&
+    (provider === undefined ||
+      (IMPORT_PROVIDERS as readonly string[]).includes(provider))
   ) {
     return true;
   }
-  // op-ai may mention import in help even before provider is chosen
-  if (command === "import") return true;
   return false;
 }
 

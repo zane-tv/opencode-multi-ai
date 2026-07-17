@@ -10,6 +10,13 @@ import {
   defaultModelsCachePath,
 } from "../lib/providers/xai/constants.js";
 
+function transport() {
+  if (xaiAdapter.transport.kind !== "http") {
+    throw new Error("xAI must use the HTTP transport");
+  }
+  return xaiAdapter.transport;
+}
+
 describe("xaiAdapter", () => {
   it("satisfies ProviderAdapter and identity fields", () => {
     expect(isProviderAdapter(xaiAdapter)).toBe(true);
@@ -24,14 +31,14 @@ describe("xaiAdapter", () => {
 
   it("host-pins api.x.ai and never rewrites", () => {
     const ok = "https://api.x.ai/v1/chat/completions";
-    expect(xaiAdapter.resolveUrl(ok)).toBe(ok);
+    expect(transport().resolveUrl(ok)).toBe(ok);
     expect(() =>
-      xaiAdapter.resolveUrl("https://api.openai.com/v1/chat"),
+      transport().resolveUrl("https://api.openai.com/v1/chat"),
     ).toThrow(/non-xAI host/);
   });
 
   it("overwrites Authorization bearer", () => {
-    const h = xaiAdapter.buildHeaders({
+    const h = transport().buildHeaders({
       accessToken: "tok-abc",
       accountId: "a1",
       initHeaders: { Authorization: "Bearer dummy" },
@@ -40,13 +47,13 @@ describe("xaiAdapter", () => {
   });
 
   it("classifies ok / quota / 429 via adapter surface", async () => {
-    const ok = await xaiAdapter.classifyResponse(
+    const ok = await transport().classifyResponse(
       new Response("{}", { status: 200 }),
       "{}",
     );
     expect(ok).toEqual({ kind: "ok" });
 
-    const quota = await xaiAdapter.classifyResponse(
+    const quota = await transport().classifyResponse(
       new Response(
         JSON.stringify({
           error: "Your team has used all available credits",

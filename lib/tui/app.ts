@@ -30,12 +30,13 @@ import {
 
 import {
   AccountManager,
+  createDefaultRefreshHandlers,
   type ProviderAccountView,
 } from "../core/accounts.js";
+import { isInvalidGrantError } from "../core/rotation-fetch.js";
 import type {
   AccountMetadata,
   CodexAccountMetadata,
-  ProviderKind,
   XaiAccountMetadata,
 } from "../core/schemas.js";
 import {
@@ -45,7 +46,7 @@ import {
   summarizePool,
   type StatusAccount,
 } from "../core/tui-status.js";
-import type { ProviderAdapter } from "../core/adapter.js";
+import type { AnyProviderAdapter } from "../core/adapter.js";
 import {
   formatDateTime,
   formatUntil,
@@ -64,6 +65,7 @@ import {
   resolveXaiRemainingPercent,
 } from "../providers/xai/request/plan.js";
 import { codexAdapter } from "../providers/codex/adapter.js";
+import { kiroAdapter } from "../providers/kiro/adapter.js";
 import {
   isWindowDisabled,
   leftPercent,
@@ -86,11 +88,19 @@ import {
 } from "./tabs.js";
 import {
   TUI_BINDINGS,
+  actionMenuBack,
+  actionMenuItems,
+  actionMenuSelectValue,
+  createActionMenuLevel,
+  openActionMenuGroup,
   advanceConfirmation,
   clearConfirmation,
   decodeTuiAction,
+  isActionMenuGroupId,
   normalizeTags,
   rowIndexFromMouse,
+  type ActionMenuLevel,
+  type ActionMenuSelectValue,
   type ConfirmationState,
   type TuiAction,
   type TuiKeyEvent,
@@ -124,6 +134,13 @@ const T = {
   codexBorder: "#10b981",
   codexSelectedBg: "#0c2a1f",
   codexSelectedText: "#6ee7b7",
+
+  kiro: "#fb923c",
+  kiroBright: "#fdba74",
+  kiroDim: "#c2410c",
+  kiroBorder: "#f97316",
+  kiroSelectedBg: "#2a1608",
+  kiroSelectedText: "#fdba74",
 
   ready: "#4ade80",
   quota: "#fbbf24",
@@ -170,9 +187,10 @@ const STATUS_LABEL: Record<StatusKind, string> = {
   flagged: "FLAGGED",
 };
 
-const ADAPTERS: Record<ProviderKind, ProviderAdapter> = {
+const ADAPTERS: Record<TuiTab, AnyProviderAdapter> = {
   xai: xaiAdapter,
   codex: codexAdapter,
+  kiro: kiroAdapter,
 };
 
 type StatusTone = "ok" | "warn" | "err" | "info" | "neutral";
@@ -185,6 +203,18 @@ type SemanticStatus = {
 };
 
 type EditField = "label" | "tags" | "note";
+
+type KiroAddWizard =
+  | { method: "api-key"; step: "key" | "region"; apiKey?: string }
+  | {
+      method: "idc-arn";
+      step: "start_url" | "region" | "arn";
+      startUrl?: string;
+      idcRegion?: string;
+    }
+  | { method: "json" }
+  | { method: "export" }
+  | { method: "cli" };
 
 type EditContext = {
   provider: TuiTab;
@@ -264,6 +294,16 @@ function providerHue(tab: TuiTab): {
       selectedText: T.xaiSelectedText,
     };
   }
+  if (tab === "kiro") {
+    return {
+      accent: T.kiro,
+      bright: T.kiroBright,
+      dim: T.kiroDim,
+      border: T.kiroBorder,
+      selectedBg: T.kiroSelectedBg,
+      selectedText: T.kiroSelectedText,
+    };
+  }
   return {
     accent: T.codex,
     bright: T.codexBright,
@@ -275,6 +315,7 @@ function providerHue(tab: TuiTab): {
 }
 
 function stickyIndex(view: ProviderAccountView): number {
+  // list() already puts the resolved active account first
   const sticky = view.sticky();
   if (!sticky) return 0;
   const i = view.list().findIndex((a) => a.accountId === sticky);
@@ -309,15 +350,8 @@ function meterColor(percent: number | undefined): string {
   return T.ready;
 }
 
-function meterDot(percent: number | undefined): string {
-  if (percent === undefined || !Number.isFinite(percent)) return "○";
-  if (percent <= 0 || percent < 15) return "🔴";
-  if (percent < 40) return "🟠";
-  if (percent < 70) return "🟡";
-  return "🟢";
-}
-
 const METER_PARTIALS = ["", "▏", "▎", "▍", "▌", "▋", "▊", "▉"] as const;
+const LIST_METER_WIDTH = 10;
 
 function meterBar(percent: number | undefined, width = 10): string {
   if (percent === undefined || !Number.isFinite(percent)) {
@@ -371,6 +405,20 @@ function remainingPercent(account: AccountMetadata): number | undefined {
   if (account.provider === "xai") {
     return resolveXaiRemainingPercent(account as XaiAccountMetadata);
   }
+  if (account.provider === "kiro") {
+    const used = account.usedCount;
+    const limit = account.limitCount;
+    if (
+      typeof used !== "number" ||
+      typeof limit !== "number" ||
+      !Number.isFinite(used) ||
+      !Number.isFinite(limit) ||
+      limit <= 0
+    ) {
+      return undefined;
+    }
+    return Math.max(0, Math.min(100, 100 - (used / limit) * 100));
+  }
   const used = (account as CodexAccountMetadata).primaryUsedPercent;
   const win = (account as CodexAccountMetadata).primaryWindowMinutes;
   if (isWindowDisabled(win)) return undefined;
@@ -422,6 +470,8 @@ function styledTabBar(active: TuiTab): StyledText {
   chunks.push(fg(T.key)("1"));
   chunks.push(fg(T.textDim)("/"));
   chunks.push(fg(T.key)("2"));
+  chunks.push(fg(T.textDim)("/"));
+  chunks.push(fg(T.key)("3"));
   chunks.push(fg(T.textDim)(" or "));
   chunks.push(fg(T.key)("Tab"));
   return joinChunks(chunks);
@@ -453,7 +503,9 @@ function styledHeader(
   ];
   const active = accounts[activeIndex];
   if (active) {
-    chunks.push(fg(T.value)(accountDisplayName(active)));
+    chunks.push(bold(fg(hue.bright)("★ ")));
+    chunks.push(bold(fg(T.ready)("ACTIVE ")));
+    chunks.push(bold(fg(hue.bright)(accountDisplayName(active))));
     chunks.push(fg(T.textDim)(" · "));
   }
   chunks.push(fg(T.ready)(`${summary.ready} ready`));
@@ -576,13 +628,24 @@ function styledHelp(activeTab: TuiTab, locale: Locale): StyledText {
   return joinChunks(chunks);
 }
 
+type AccountListOption = SelectOption & {
+  remainingPercent?: number;
+};
+
 function accountOptions(
   view: ProviderAccountView,
-  adapter: ProviderAdapter,
+  adapter: AnyProviderAdapter,
   now: number,
-): SelectOption[] {
-  const accounts = view.list();
+): AccountListOption[] {
+  const raw = view.list();
   const sticky = view.sticky();
+  const accounts =
+    sticky === undefined
+      ? raw
+      : [
+          ...raw.filter((a) => a.accountId === sticky),
+          ...raw.filter((a) => a.accountId !== sticky),
+        ];
   if (accounts.length === 0) {
     return [
       {
@@ -594,34 +657,283 @@ function accountOptions(
   }
   return accounts.map((a, i) => {
     const kind = accountStatus(a, now);
-    const marker = a.accountId === sticky ? "*" : " ";
+    const isSticky = a.accountId === sticky;
     const glyph = statusGlyph(kind);
     const rem = remainingPercent(a);
-    const bar = meterBar(rem, 10);
     const pct =
       rem === undefined || !Number.isFinite(rem)
         ? "  — "
         : `${String(Math.round(rem)).padStart(3, " ")}%`;
-    const name = `${glyph}${marker} ${i}  ${accountDisplayName(a)}`;
+    const activeTag = isSticky ? " ★ ACTIVE" : "";
+    const name = `${glyph}${isSticky ? "★" : " "} ${i}  ${accountDisplayName(a)}${activeTag}`;
     const subtitle = adapter.listSubtitle(
       a as unknown as Record<string, unknown>,
       now,
     );
-    const description = `${meterDot(rem)} │${bar}│ ${pct}  ${subtitle}`;
+    const description = `│${meterBar(rem, LIST_METER_WIDTH)}│ ${pct}  ${subtitle}`;
     return {
       name,
       description,
       value: i,
+      remainingPercent: rem,
     };
   });
 }
 
-function buildActionOptions(): SelectOption[] {
-  return TUI_BINDINGS.filter((b) => b.available).map((b) => ({
-    name: `${b.key}  ${tr(b.labelKey)}`,
-    description: tr(b.descKey),
-    value: b.action,
-  }));
+type AccountSelectFrameBuffer = {
+  clear: (color: unknown) => void;
+  fillRect: (
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    color: unknown,
+  ) => void;
+  drawText: (text: string, x: number, y: number, color: unknown) => void;
+};
+
+type AccountSelectInternals = {
+  frameBuffer: AccountSelectFrameBuffer | null;
+  _focused: boolean;
+  _focusedBackgroundColor: unknown;
+  _backgroundColor: unknown;
+  _options: AccountListOption[];
+  _selectedIndex: number;
+  scrollOffset: number;
+  maxVisibleItems: number;
+  linesPerItem: number;
+  fontHeight: number;
+  _itemSpacing: number;
+  _selectedBackgroundColor: unknown;
+  _showSelectionIndicator: boolean;
+  _focusedTextColor: unknown;
+  _textColor: unknown;
+  _selectedTextColor: unknown;
+  _showDescription: boolean;
+  _selectedDescriptionColor: unknown;
+  _descriptionColor: unknown;
+  _showScrollIndicator: boolean;
+  width: number;
+  height: number;
+  renderScrollIndicatorToFrameBuffer: (
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+  ) => void;
+  refreshFrameBuffer: () => void;
+};
+
+function paintAccountSelectFrame(self: AccountSelectInternals): void {
+  const fb = self.frameBuffer;
+  if (!fb) return;
+
+  const bgColor = self._focused
+    ? self._focusedBackgroundColor
+    : self._backgroundColor;
+  fb.clear(bgColor);
+  if (self._options.length === 0) return;
+
+  const contentX = 0;
+  const contentY = 0;
+  const contentWidth = self.width;
+  const contentHeight = self.height;
+  const visible = self._options.slice(
+    self.scrollOffset,
+    self.scrollOffset + self.maxVisibleItems,
+  );
+
+  for (let i = 0; i < visible.length; i++) {
+    const actualIndex = self.scrollOffset + i;
+    const option = visible[i]!;
+    const isSelected = actualIndex === self._selectedIndex;
+    const itemY = contentY + i * self.linesPerItem;
+    if (itemY + self.linesPerItem - 1 >= contentY + contentHeight) break;
+
+    if (isSelected) {
+      const rowH = self.linesPerItem - self._itemSpacing;
+      fb.fillRect(
+        contentX,
+        itemY,
+        contentWidth,
+        rowH,
+        self._selectedBackgroundColor,
+      );
+    }
+
+    const indicator = self._showSelectionIndicator
+      ? isSelected
+        ? "▶ "
+        : "  "
+      : "";
+    const indicatorWidth = self._showSelectionIndicator ? 2 : 0;
+    const nameContent = `${indicator}${option.name}`;
+    const baseTextColor = self._focused
+      ? self._focusedTextColor
+      : self._textColor;
+    const nameColor = isSelected ? self._selectedTextColor : baseTextColor;
+    const textX = contentX + 1 + indicatorWidth;
+    fb.drawText(nameContent, contentX + 1, itemY, nameColor);
+
+    if (
+      self._showDescription &&
+      itemY + self.fontHeight < contentY + contentHeight
+    ) {
+      const descY = itemY + self.fontHeight;
+      const descMuted = isSelected
+        ? self._selectedDescriptionColor
+        : self._descriptionColor;
+      const rem = option.remainingPercent;
+      let x = textX;
+
+      fb.drawText("│", x, descY, parseColor(T.textDim));
+      x += 1;
+
+      if (rem === undefined || !Number.isFinite(rem)) {
+        const dash = meterBar(undefined, LIST_METER_WIDTH);
+        fb.drawText(dash, x, descY, parseColor(T.textDim));
+        x += dash.length;
+      } else {
+        const { filled, empty } = meterParts(rem, LIST_METER_WIDTH);
+        if (filled) {
+          fb.drawText(filled, x, descY, parseColor(meterColor(rem)));
+          x += filled.length;
+        }
+        if (empty) {
+          fb.drawText(empty, x, descY, parseColor(T.meterEmpty));
+          x += empty.length;
+        }
+      }
+
+      fb.drawText("│", x, descY, parseColor(T.textDim));
+      x += 1;
+
+      const pct =
+        rem === undefined || !Number.isFinite(rem)
+          ? "  — "
+          : `${String(Math.round(rem)).padStart(3, " ")}%`;
+      fb.drawText(
+        ` ${pct} `,
+        x,
+        descY,
+        rem === undefined ? descMuted : parseColor(meterColor(rem)),
+      );
+      x += pct.length + 2;
+
+      const rest = option.description.replace(/^│[^│]*│\s*\S+\s*/, "");
+      if (rest) {
+        fb.drawText(rest, x, descY, descMuted);
+      }
+    }
+  }
+
+  if (
+    self._showScrollIndicator &&
+    self._options.length > self.maxVisibleItems
+  ) {
+    self.renderScrollIndicatorToFrameBuffer(
+      contentX,
+      contentY,
+      contentWidth,
+      contentHeight,
+    );
+  }
+}
+
+function enableColoredAccountMeters(select: SelectRenderable): void {
+  const self = select as unknown as AccountSelectInternals;
+  self.refreshFrameBuffer = () => paintAccountSelectFrame(self);
+}
+
+function cleanMenuLabel(raw: string): string {
+  return raw.replace(/^[a-zA-Z\[\]{}?]\s+/, "").trim() || raw;
+}
+
+function encodeActionMenuValue(v: ActionMenuSelectValue): string {
+  if (v.type === "back") return "back";
+  if (v.type === "open") return `open:${v.group}`;
+  return `run:${v.action}`;
+}
+
+function buildActionOptions(
+  level: ActionMenuLevel,
+  provider: TuiTab,
+): SelectOption[] {
+  return actionMenuItems(level, provider).map((item) => {
+    const encoded = encodeActionMenuValue(actionMenuSelectValue(item));
+    switch (item.kind) {
+      case "group":
+        return {
+          name: tr(item.labelKey),
+          description: tr(item.descKey),
+          value: encoded,
+        };
+      case "back":
+        return {
+          name: tr(item.labelKey),
+          description: tr("menu_desc_back"),
+          value: encoded,
+        };
+      case "action":
+      case "top": {
+        const b = item.binding;
+        return {
+          name: cleanMenuLabel(tr(b.labelKey)),
+          description: tr(b.descKey),
+          value: encoded,
+        };
+      }
+    }
+  });
+}
+
+function parseActionMenuValue(raw: unknown): ActionMenuSelectValue | undefined {
+  if (raw && typeof raw === "object" && raw !== null && "type" in raw) {
+    const obj = raw as ActionMenuSelectValue;
+    if (obj.type === "back") return obj;
+    if (obj.type === "open" && isActionMenuGroupId(obj.group)) return obj;
+    if (obj.type === "run" && typeof obj.action === "string") return obj;
+  }
+  if (typeof raw !== "string") return undefined;
+  if (raw === "back") return { type: "back" };
+  if (raw.startsWith("open:")) {
+    const group = raw.slice(5);
+    if (isActionMenuGroupId(group)) return { type: "open", group };
+    return undefined;
+  }
+  if (raw.startsWith("run:")) {
+    return { type: "run", action: raw.slice(4) as TuiAction };
+  }
+  if (raw.startsWith("{")) {
+    try {
+      return parseActionMenuValue(JSON.parse(raw));
+    } catch {
+      return undefined;
+    }
+  }
+  return { type: "run", action: raw as TuiAction };
+}
+
+function isActivateKey(key: {
+  name?: string;
+  sequence?: string;
+  raw?: string;
+}): boolean {
+  const name = (key.name ?? "").toLowerCase();
+  const seq = key.sequence ?? key.raw ?? "";
+  if (
+    name === "return" ||
+    name === "enter" ||
+    name === "linefeed" ||
+    name === "space"
+  ) {
+    return true;
+  }
+  if (seq === "\r" || seq === "\n" || seq === "\r\n" || seq === " ") {
+    return true;
+  }
+  if (!name && (seq.includes("\r") || seq.includes("\n"))) return true;
+  return false;
 }
 
 function labelValue(
@@ -646,9 +958,10 @@ function sectionHeader(title: string, accent: string): TextChunk[] {
 
 function styledDetail(
   account: AccountMetadata | undefined,
-  adapter: ProviderAdapter,
+  adapter: AnyProviderAdapter,
   now: number,
   tab: TuiTab,
+  stickyId?: string,
 ): StyledText {
   const hue = providerHue(tab);
   if (!account) {
@@ -658,15 +971,27 @@ function styledDetail(
   const kind = accountStatus(account, now);
   const statusColor = STATUS_COLOR[kind];
   const rem = remainingPercent(account);
+  const isSticky = stickyId !== undefined && account.accountId === stickyId;
   const chunks: TextChunk[] = [];
 
   chunks.push(bold(fg(hue.bright)(accountDisplayName(account))));
+  if (isSticky) {
+    chunks.push(fg(T.textDim)("  "));
+    chunks.push(bold(fg(T.ready)("★ ACTIVE")));
+  }
   chunks.push(fg(T.text)("\n"));
   chunks.push(fg(T.label)("status      "));
   chunks.push(
     bold(fg(statusColor)(`${statusGlyph(kind)} ${STATUS_LABEL[kind]}`)),
   );
   chunks.push(fg(T.text)("\n"));
+  chunks.push(
+    ...labelValue(
+      "role",
+      isSticky ? "★ ACTIVE (sticky — rotation drains this first)" : "standby",
+      isSticky ? T.ready : T.textMuted,
+    ),
+  );
 
   chunks.push(
     ...labelValue(
@@ -918,26 +1243,14 @@ function asString(v: unknown): string | undefined {
 export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
   const manager =
     opts.manager ??
-    new AccountManager(undefined, {
-      xai: async (refreshToken) => {
-        const { refreshTokens } = await import(
-          "../providers/xai/auth/oauth.js"
-        );
-        return refreshTokens(refreshToken);
-      },
-      codex: async (refreshToken) => {
-        const { refreshTokens } = await import(
-          "../providers/codex/auth/oauth.js"
-        );
-        return refreshTokens(refreshToken);
-      },
-    });
+    new AccountManager(undefined, createDefaultRefreshHandlers());
   await manager.load();
 
   let activeTab: TuiTab = opts.initialTab ?? "codex";
   let selection: TabSelectionState = createTabSelection({
     xai: stickyIndex(manager.providerView("xai")),
     codex: stickyIndex(manager.providerView("codex")),
+    kiro: stickyIndex(manager.providerView("kiro")),
   });
   let gens: LiveGeneration = createLiveGeneration();
   let alive = true;
@@ -951,8 +1264,10 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
   let semanticStatus: SemanticStatus | undefined;
   let editMode = false;
   let editContext: EditContext | null = null;
+  let kiroWizard: KiroAddWizard | null = null;
   let addAbort: AbortController | null = null;
   let focusPane: "accounts" | "actions" | "edit" = "accounts";
+  let actionMenuLevel: ActionMenuLevel = createActionMenuLevel();
 
   function teardown(): void {
     if (!alive) return;
@@ -1057,6 +1372,19 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
     padding: 1,
   });
 
+  const listKeyBindings = [
+    { name: "up" as const, action: "move-up" as const },
+    { name: "k" as const, action: "move-up" as const },
+    { name: "down" as const, action: "move-down" as const },
+    { name: "j" as const, action: "move-down" as const },
+    { name: "up" as const, shift: true, action: "move-up-fast" as const },
+    { name: "down" as const, shift: true, action: "move-down-fast" as const },
+    { name: "return" as const, action: "select-current" as const },
+    { name: "linefeed" as const, action: "select-current" as const },
+    { name: "enter" as const, action: "select-current" as const },
+    { name: "space" as const, action: "select-current" as const },
+  ];
+
   const accountSelect = new SelectRenderable(renderer, {
     id: "accounts",
     width: "100%",
@@ -1075,14 +1403,16 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
     wrapSelection: true,
     showDescription: true,
     showSelectionIndicator: true,
+    keyBindings: listKeyBindings,
   });
+  enableColoredAccountMeters(accountSelect);
 
   const actionSelect = new SelectRenderable(renderer, {
     id: "actions",
     width: "100%",
     height: 10,
     flexGrow: 1,
-    options: buildActionOptions(),
+    options: buildActionOptions(actionMenuLevel, activeTab),
     backgroundColor: parseColor(T.surface),
     textColor: parseColor(T.text),
     focusedBackgroundColor: parseColor(T.surface),
@@ -1095,6 +1425,7 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
     wrapSelection: true,
     showDescription: true,
     showSelectionIndicator: true,
+    keyBindings: listKeyBindings,
   });
 
   const editInput = new InputRenderable(renderer, {
@@ -1126,7 +1457,7 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
     return manager.providerView(activeTab);
   }
 
-  function adapter(): ProviderAdapter {
+  function adapter(): AnyProviderAdapter {
     return ADAPTERS[activeTab];
   }
 
@@ -1140,8 +1471,18 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
     }
   }
 
+  function orderedAccounts(): AccountMetadata[] {
+    const raw = view().list();
+    const sticky = view().sticky();
+    if (sticky === undefined) return raw;
+    return [
+      ...raw.filter((a) => a.accountId === sticky),
+      ...raw.filter((a) => a.accountId !== sticky),
+    ];
+  }
+
   function selectedAccount(): AccountMetadata | undefined {
-    const accounts = view().list();
+    const accounts = orderedAccounts();
     let idx = selection[activeTab]!;
     try {
       const live = accountSelect.getSelectedIndex();
@@ -1237,7 +1578,13 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
     }
     const accounts = view().list();
     const acc = accounts[selection[activeTab]!];
-    detailText.content = styledDetail(acc, adapter(), Date.now(), activeTab);
+    detailText.content = styledDetail(
+      acc,
+      adapter(),
+      Date.now(),
+      activeTab,
+      view().sticky(),
+    );
   }
 
   function refreshViews(): void {
@@ -1276,7 +1623,7 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
         accountSelect.setSelectedIndex(selected);
       }
 
-      actionSelect.options = buildActionOptions();
+      actionSelect.options = buildActionOptions(actionMenuLevel, activeTab);
       actionSelect.selectedBackgroundColor = parseColor(hue.selectedBg);
       actionSelect.selectedTextColor = parseColor(hue.selectedText);
 
@@ -1302,16 +1649,331 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
     activeTab = next;
     helpVisible = false;
     disarmConfirmation();
+    if (actionMenuLevel.kind === "group") {
+      setActionMenuLevel(createActionMenuLevel());
+    } else {
+      actionSelect.options = buildActionOptions(actionMenuLevel, activeTab);
+    }
     refreshViews();
   }
 
   function cancelEdit(): void {
     editMode = false;
     editContext = null;
+    kiroWizard = null;
     editInput.visible = false;
     editInput.value = "";
     editInput.blur();
     focusAccountsPane();
+  }
+
+  function showWizardInput(placeholder: string, status: string): void {
+    editMode = true;
+    focusPane = "edit";
+    helpVisible = false;
+    editInput.placeholder = placeholder;
+    editInput.visible = true;
+    editInput.value = "";
+    editInput.focus();
+    paintFocus();
+    queueMicrotask(() => {
+      if (editMode && editInput.visible) editInput.value = "";
+    });
+    setStatus({ text: status, tone: "info" });
+  }
+
+  function beginKiroWizard(method: KiroAddWizard["method"]): void {
+    if (activeTab !== "kiro" || busy || addAbort) return;
+    if (editMode) cancelEdit();
+    confirmation = clearConfirmation();
+    if (method === "api-key") {
+      kiroWizard = { method: "api-key", step: "key" };
+      showWizardInput(
+        "ksk_…",
+        "Kiro API key — Enter next · Esc cancel",
+      );
+      return;
+    }
+    if (method === "idc-arn") {
+      kiroWizard = { method: "idc-arn", step: "start_url" };
+      showWizardInput(
+        "https://your-company.awsapps.com/start (blank = Builder ID)",
+        "IDC start URL — Enter next · Esc cancel",
+      );
+      return;
+    }
+    if (method === "json") {
+      kiroWizard = { method: "json" };
+      showWizardInput(
+        '{"refreshToken":"…","authMethod":"idc",…}',
+        "Paste credentials JSON — Enter import · Esc cancel",
+      );
+      return;
+    }
+    if (method === "export") {
+      kiroWizard = { method: "export" };
+      showWizardInput(
+        '{"accounts":[…]}',
+        "Paste Account Manager export — Enter import · Esc cancel",
+      );
+      return;
+    }
+    kiroWizard = { method: "cli" };
+    showWizardInput(
+      "(blank = default kiro-cli path)",
+      "kiro-cli DB path — Enter import · Esc cancel",
+    );
+  }
+
+  async function finishKiroAccount(
+    account: import("../core/schemas.js").AccountMetadata,
+  ): Promise<void> {
+    const v = manager.providerView("kiro");
+    const outcome = await v.upsertFromOAuth(account);
+    restoreSelectionById("kiro", account.accountId);
+    setStatus({
+      text: `${outcome} ${account.email ?? account.accountId.slice(0, 12)}`,
+      tone: "ok",
+    });
+    refreshViews();
+    try {
+      const acc = v.get(account.accountId);
+      if (acc) await probeAndRecord("kiro", v, acc);
+      if (activeTab === "kiro") refreshViews();
+    } catch {
+      /* ignore probe after add */
+    }
+  }
+
+  async function advanceKiroWizard(): Promise<void> {
+    if (!kiroWizard) {
+      cancelEdit();
+      return;
+    }
+    const raw = editInput.value;
+    const value = raw.trim();
+
+    try {
+      if (kiroWizard.method === "api-key") {
+        if (kiroWizard.step === "key") {
+          if (!value.startsWith("ksk_")) {
+            setStatus({
+              text: "API key must start with ksk_",
+              tone: "err",
+            });
+            return;
+          }
+          kiroWizard = {
+            method: "api-key",
+            step: "region",
+            apiKey: value,
+          };
+          showWizardInput(
+            "us-east-1 (blank = default)",
+            "Region — Enter finish · Esc cancel",
+          );
+          return;
+        }
+        const { loginWithApiKey } = await import(
+          "../providers/kiro/auth/login.js"
+        );
+        const account = await loginWithApiKey(
+          kiroWizard.apiKey ?? "",
+          value || undefined,
+        );
+        cancelEdit();
+        busy = true;
+        try {
+          await finishKiroAccount(account);
+        } finally {
+          busy = false;
+        }
+        return;
+      }
+
+      if (kiroWizard.method === "idc-arn") {
+        if (kiroWizard.step === "start_url") {
+          kiroWizard = {
+            method: "idc-arn",
+            step: "region",
+            startUrl: value || undefined,
+          };
+          showWizardInput(
+            "us-east-1 (blank = default)",
+            "IDC region (sso_region) — Enter next · Esc cancel",
+          );
+          return;
+        }
+        if (kiroWizard.step === "region") {
+          kiroWizard = {
+            method: "idc-arn",
+            step: "arn",
+            startUrl: kiroWizard.startUrl,
+            idcRegion: value || undefined,
+          };
+          showWizardInput(
+            "arn:aws:codewhisperer:…:profile/…",
+            "Profile ARN (required) — Enter start login · Esc cancel",
+          );
+          return;
+        }
+        if (!value) {
+          setStatus({ text: "Profile ARN is required", tone: "err" });
+          return;
+        }
+        const startUrl = kiroWizard.startUrl;
+        const idcRegion = kiroWizard.idcRegion;
+        const profileArn = value;
+        cancelEdit();
+        const controller = new AbortController();
+        addAbort = controller;
+        busy = true;
+        setStatus({ text: "IDC + ARN login…", tone: "info" });
+        try {
+          const { loginWithIdcDevice } = await import(
+            "../providers/kiro/auth/login.js"
+          );
+          const account = await loginWithIdcDevice(
+            {
+              startUrl,
+              idcRegion,
+              profileArn,
+              openBrowser: true,
+              signal: controller.signal,
+            },
+            (prompt) => {
+              setStatus({
+                text: `${prompt.verificationUri}  code ${prompt.userCode}`,
+                tone: "info",
+              });
+              detailText.content = t`${bold(fg(T.kiroBright)("Kiro IDC + ARN"))}${fg(T.text)("\n\n")}${fg(T.label)("URL   ")}${fg(T.value)(prompt.verificationUri)}${fg(T.text)("\n")}${fg(T.label)("Code  ")}${bold(fg(T.ready)(prompt.userCode))}${fg(T.text)("\n\n")}${fg(T.textDim)("Esc cancels")}`;
+            },
+          );
+          await finishKiroAccount(account);
+        } catch (err) {
+          const cancelled =
+            (err as { name?: string }).name === "LoginCancelledError" ||
+            (err as Error).message === "login cancelled" ||
+            controller.signal.aborted;
+          setStatus({
+            text: cancelled
+              ? "add cancelled"
+              : `add failed: ${(err as Error).message}`,
+            tone: cancelled ? "warn" : "err",
+          });
+          if (activeTab === "kiro") paintDetail();
+        } finally {
+          if (addAbort === controller) addAbort = null;
+          busy = false;
+        }
+        return;
+      }
+
+      if (kiroWizard.method === "json") {
+        if (!value) {
+          setStatus({ text: "JSON is required", tone: "err" });
+          return;
+        }
+        const { importCredentialsJson } = await import(
+          "../providers/kiro/auth/login.js"
+        );
+        cancelEdit();
+        busy = true;
+        try {
+          const account = await importCredentialsJson(value);
+          await finishKiroAccount(account);
+        } catch (err) {
+          setStatus({
+            text: `import failed: ${(err as Error).message}`,
+            tone: "err",
+          });
+        } finally {
+          busy = false;
+        }
+        return;
+      }
+
+      if (kiroWizard.method === "export") {
+        if (!value) {
+          setStatus({ text: "Export JSON is required", tone: "err" });
+          return;
+        }
+        const { importAccountManagerExport } = await import(
+          "../providers/kiro/auth/login.js"
+        );
+        cancelEdit();
+        busy = true;
+        try {
+          const accounts = await importAccountManagerExport(value);
+          let last = accounts[0];
+          for (const account of accounts) {
+            await manager.providerView("kiro").upsertFromOAuth(account);
+            last = account;
+          }
+          if (last) {
+            restoreSelectionById("kiro", last.accountId);
+            setStatus({
+              text: `imported ${accounts.length} account(s)`,
+              tone: "ok",
+            });
+          } else {
+            setStatus({ text: "export had no accounts", tone: "warn" });
+          }
+          refreshViews();
+        } catch (err) {
+          setStatus({
+            text: `import failed: ${(err as Error).message}`,
+            tone: "err",
+          });
+        } finally {
+          busy = false;
+        }
+        return;
+      }
+
+      {
+        const { readKiroCliCandidates, defaultKiroCliDbPath } = await import(
+          "../providers/kiro/auth/kiro-cli-import.js"
+        );
+        cancelEdit();
+        busy = true;
+        try {
+          const dbPath = value || defaultKiroCliDbPath();
+          const { candidates, warnings } = await readKiroCliCandidates(dbPath);
+          for (const w of warnings) {
+            setStatus({ text: `warn: ${w}`, tone: "warn" });
+          }
+          let last = candidates[0];
+          for (const account of candidates) {
+            await manager.providerView("kiro").upsertFromOAuth(account);
+            last = account;
+          }
+          if (last) {
+            restoreSelectionById("kiro", last.accountId);
+            setStatus({
+              text: `imported ${candidates.length} from kiro-cli`,
+              tone: "ok",
+            });
+          } else {
+            setStatus({ text: "no accounts in kiro-cli DB", tone: "warn" });
+          }
+          refreshViews();
+        } catch (err) {
+          setStatus({
+            text: `kiro-cli import failed: ${(err as Error).message}`,
+            tone: "err",
+          });
+        } finally {
+          busy = false;
+        }
+      }
+    } catch (err) {
+      setStatus({
+        text: `wizard failed: ${(err as Error).message}`,
+        tone: "err",
+      });
+      cancelEdit();
+    }
   }
 
   function beginEdit(field: EditField): void {
@@ -1357,6 +2019,10 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
   }
 
   async function commitEdit(): Promise<void> {
+    if (kiroWizard) {
+      await advanceKiroWizard();
+      return;
+    }
     if (!editContext) {
       cancelEdit();
       return;
@@ -1413,22 +2079,106 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
     },
   );
 
+  function setActionMenuLevel(next: ActionMenuLevel): void {
+    actionMenuLevel = next;
+    try {
+      actionSelect.options = buildActionOptions(actionMenuLevel, activeTab);
+      actionSelect.setSelectedIndex(0);
+      const group =
+        actionMenuLevel.kind === "group" ? actionMenuLevel.group : undefined;
+      const titleBase = tr("actions_title").trim() || "actions";
+      if (group) {
+        const metaLabel = tr(
+          group === "account"
+            ? "menu_account"
+            : group === "edit"
+              ? "menu_edit"
+              : group === "add"
+                ? "menu_add"
+                : group === "quota"
+                  ? "menu_quota"
+                  : "menu_danger",
+        );
+        actionsBox.title = `${TAB_LABELS[activeTab]} ${titleBase} · ${metaLabel}`;
+      } else {
+        actionsBox.title = `${TAB_LABELS[activeTab]}${tr("actions_title")}`;
+      }
+    } catch {
+      void 0;
+    }
+  }
+
+  function activateActionMenuSelection(): void {
+    if (busy || editMode) return;
+    focusPane = "actions";
+    try {
+      actionSelect.focus();
+    } catch {
+      void 0;
+    }
+    paintFocus();
+    const idx = actionSelect.getSelectedIndex();
+    const opts = actionSelect.options ?? [];
+    const selected =
+      (idx >= 0 && idx < opts.length ? opts[idx] : undefined) ??
+      actionSelect.getSelectedOption() ??
+      opts[0];
+    if (selected) {
+      runSelectedActionOption(selected);
+      return;
+    }
+    try {
+      actionSelect.selectCurrent();
+    } catch {
+      void 0;
+    }
+  }
+
   function runSelectedActionOption(opt: SelectOption | null | undefined): void {
     if (busy || editMode || !opt) return;
-    const value = opt.value;
-    if (typeof value !== "string") return;
-    void runAction(value as TuiAction);
+    const parsed = parseActionMenuValue(opt.value);
+    if (!parsed) return;
+    if (parsed.type === "open") {
+      setActionMenuLevel(openActionMenuGroup(actionMenuLevel, parsed.group));
+      focusPane = "actions";
+      try {
+        actionSelect.focus();
+      } catch {
+        void 0;
+      }
+      paintFocus();
+      return;
+    }
+    if (parsed.type === "back") {
+      setActionMenuLevel(actionMenuBack(actionMenuLevel));
+      focusPane = "actions";
+      try {
+        actionSelect.focus();
+      } catch {
+        void 0;
+      }
+      paintFocus();
+      return;
+    }
+    void runAction(parsed.action);
   }
 
   actionSelect.on(
     SelectRenderableEvents.ITEM_SELECTED,
-    (idxOrOpt: number | SelectOption, optOrIdx?: SelectOption | number) => {
-      const opt =
-        typeof idxOrOpt === "object" && idxOrOpt !== null
-          ? idxOrOpt
-          : typeof optOrIdx === "object" && optOrIdx !== null
-            ? optOrIdx
-            : null;
+    (...args: unknown[]) => {
+      let opt: SelectOption | null = null;
+      for (const a of args) {
+        if (a && typeof a === "object" && "value" in (a as object)) {
+          opt = a as SelectOption;
+          break;
+        }
+      }
+      if (!opt) {
+        const idx = actionSelect.getSelectedIndex();
+        const opts = actionSelect.options ?? [];
+        opt = (idx >= 0 && idx < opts.length ? opts[idx] : null) ??
+          actionSelect.getSelectedOption();
+      }
       runSelectedActionOption(opt);
     },
   );
@@ -1629,7 +2379,16 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
         return "failure";
       }
 
-      // codex
+      if (tab === "kiro") {
+        await v.recordKiroUsage(account.accountId, {
+          usedCount: asFiniteNumber(result.usedCount),
+          limitCount: asFiniteNumber(result.limitCount),
+          email: asString(result.email),
+          observedAt: asFiniteNumber(result.observedAt) ?? Date.now(),
+        });
+        return "success";
+      }
+
       await v.recordUsage(account.accountId, {
         planType: asString(result.planType),
         primaryUsedPercent: asFiniteNumber(result.primaryUsedPercent),
@@ -1642,7 +2401,10 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
         observedAt: asFiniteNumber(result.observedAt) ?? Date.now(),
       });
       return "success";
-    } catch {
+    } catch (err) {
+      if (isInvalidGrantError(err)) {
+        await v.markDeadCandidate(account.accountId);
+      }
       return "failure";
     }
   }
@@ -1690,6 +2452,10 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
           disarmConfirmation("confirm cancelled");
           return;
         }
+        if (actionMenuLevel.kind === "group") {
+          setActionMenuLevel(actionMenuBack(actionMenuLevel));
+          return;
+        }
         if (helpVisible) {
           helpVisible = false;
           paintDetail();
@@ -1706,6 +2472,9 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
         return;
       case "tab-codex":
         switchTab("codex");
+        return;
+      case "tab-kiro":
+        switchTab("kiro");
         return;
       case "tab-next":
         switchTab(nextTab(activeTab));
@@ -1730,7 +2499,9 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
         await withBusy(async () => {
           const acc = selectedAccount();
           if (!acc) return;
-          await view().switchTo(acc.accountId);
+          const id = acc.accountId;
+          await view().switchTo(id);
+          restoreSelectionById(activeTab, id);
           setStatus({
             text: `Active ${TAB_LABELS[activeTab]}: ${accountDisplayName(acc)}`,
             tone: "ok",
@@ -1870,6 +2641,35 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
         });
         return;
       }
+      case "clean-dead": {
+        await withBusy(async () => {
+          const r = advanceConfirmation(confirmation, "clean-dead", {
+            provider: activeTab,
+          });
+          confirmation = r.next;
+          if (!r.confirmed) {
+            const n = view().deadAccounts().length;
+            if (n === 0) {
+              confirmation = clearConfirmation();
+              setStatus({ text: "no dead accounts", tone: "info" });
+              return;
+            }
+            setStatus({
+              text: `press P again to clean ${n} dead`,
+              tone: "warn",
+            });
+            return;
+          }
+          const result = await view().cleanDeadAccounts();
+          setStatus({
+            text: `cleaned ${result.removed.length} dead`,
+            tone: "ok",
+          });
+          restoreSelectionById(activeTab, selectedId());
+          refreshViews();
+        });
+        return;
+      }
       case "refresh": {
         await withBusy(async () => {
           const acc = selectedAccount();
@@ -1937,12 +2737,16 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
             codex:
               manager.providerView("codex").list()[selection.codex!]
                 ?.accountId,
+            kiro: manager.providerView("kiro").list()[selection.kiro!]
+              ?.accountId,
           };
           gens = bumpGeneration(gens, "xai");
           gens = bumpGeneration(gens, "codex");
+          gens = bumpGeneration(gens, "kiro");
           await manager.reloadFromDisk();
           restoreSelectionById("xai", keep.xai);
           restoreSelectionById("codex", keep.codex);
+          restoreSelectionById("kiro", keep.kiro);
           setStatus({ text: "reloaded from disk", tone: "ok" });
           refreshViews();
         });
@@ -1952,7 +2756,49 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
         void startAdd("device");
         return;
       case "add-browser":
-        void startAdd("browser");
+        if (activeTab === "kiro") {
+          void startAdd("device");
+        } else {
+          void startAdd("browser");
+        }
+        return;
+      case "add-kiro-api-key":
+        if (activeTab !== "kiro") {
+          setStatus({ text: "switch to Kiro tab for API key add", tone: "warn" });
+          return;
+        }
+        beginKiroWizard("api-key");
+        return;
+      case "add-kiro-idc-arn":
+        if (activeTab !== "kiro") {
+          setStatus({ text: "switch to Kiro tab for IDC+ARN", tone: "warn" });
+          return;
+        }
+        beginKiroWizard("idc-arn");
+        return;
+      case "add-kiro-json":
+        if (activeTab !== "kiro") {
+          setStatus({ text: "switch to Kiro tab for JSON import", tone: "warn" });
+          return;
+        }
+        beginKiroWizard("json");
+        return;
+      case "add-kiro-export":
+        if (activeTab !== "kiro") {
+          setStatus({
+            text: "switch to Kiro tab for export import",
+            tone: "warn",
+          });
+          return;
+        }
+        beginKiroWizard("export");
+        return;
+      case "add-kiro-cli":
+        if (activeTab !== "kiro") {
+          setStatus({ text: "switch to Kiro tab for kiro-cli import", tone: "warn" });
+          return;
+        }
+        beginKiroWizard("cli");
         return;
       default: {
         const _exhaustive: never = action;
@@ -2015,6 +2861,24 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
             onAuthorizeUrl: (url) => paintBrowser(T.xaiBright, url),
           });
         }
+      } else if (tab === "kiro") {
+        const { loginWithIdcDevice } = await import(
+          "../providers/kiro/auth/login.js"
+        );
+        const account = await loginWithIdcDevice(
+          { openBrowser: true, signal: controller.signal },
+          (prompt) =>
+            paintDevice(T.kiroBright, {
+              verificationUri: prompt.verificationUri,
+              userCode: prompt.userCode,
+            }),
+        );
+        const outcome = await v.upsertFromOAuth(account);
+        result = {
+          accountId: account.accountId,
+          email: account.email,
+          outcome,
+        };
       } else {
         const inj = opts.login?.codex;
         if (mode === "device") {
@@ -2152,18 +3016,17 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
 
     // Shift+Tab toggles accounts↔actions focus; plain Tab stays tab-next.
     const keyName = (kev.name ?? "").toLowerCase();
+    const seq = kev.sequence ?? "";
     if (keyName === "tab" && kev.shift) {
       toggleFocusPane();
       return;
     }
 
-    if (
-      focusPane === "actions" &&
-      (keyName === "return" || keyName === "enter")
-    ) {
-      const selected = actionSelect.getSelectedOption();
-      if (selected) runSelectedActionOption(selected);
-      else actionSelect.selectCurrent();
+    if (isActivateKey({ name: keyName, sequence: seq })) {
+      if (focusPane !== "actions") {
+        focusActionsPane();
+      }
+      activateActionMenuSelection();
       return;
     }
 
@@ -2186,6 +3049,7 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
       action !== "toggle-locale" &&
       action !== "tab-xai" &&
       action !== "tab-codex" &&
+      action !== "tab-kiro" &&
       action !== "tab-next"
     ) {
       return;

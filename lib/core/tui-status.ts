@@ -161,7 +161,7 @@ export function renderStatusLine(
   const segments: string[] = [];
 
   const active = accounts[activeIndex];
-  if (active) segments.push(accountDisplayName(active));
+  if (active) segments.push(`★ ACTIVE ${accountDisplayName(active)}`);
 
   segments.push(`${summary.ready} ready`);
   if (summary.quotaExhausted > 0) {

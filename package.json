@@ -1,7 +1,7 @@
 {
   "name": "opencode-multi-ai",
   "version": "0.1.0",
-  "description": "OpenCode multi-account plugin unifying SuperGrok (xai-multi) and ChatGPT/Codex (codex-multi) with tabbed TUI.",
+  "description": "OpenCode multi-account plugin unifying SuperGrok (xai-multi), ChatGPT/Codex (codex-multi), and Kiro (kiro-multi) with tabbed TUI.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -13,40 +13,60 @@
   },
   "type": "module",
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "main": "index.ts",
   "bin": {
     "op-ai": "./scripts/cli.ts",
     "op-xai": "./scripts/cli.ts",
     "op-codex": "./scripts/cli.ts",
+    "op-kiro": "./scripts/cli.ts",
     "opencode-multi-ai": "./scripts/cli.ts",
     "opencode-multi-xai": "./scripts/cli.ts",
     "opencode-multi-codex": "./scripts/cli.ts",
     "xai-multi": "./scripts/cli.ts",
-    "codex-multi": "./scripts/cli.ts"
+    "codex-multi": "./scripts/cli.ts",
+    "kiro-multi": "./scripts/cli.ts"
   },
   "exports": {
     ".": "./index.ts",
     "./lib/plugin/xai": "./lib/plugin/xai.ts",
-    "./lib/plugin/codex": "./lib/plugin/codex.ts"
+    "./lib/plugin/codex": "./lib/plugin/codex.ts",
+    "./lib/plugin/kiro": "./lib/plugin/kiro.ts",
+    "./tui": "./lib/plugin/tui.tsx"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:tui-ffi": "bun --bun ./node_modules/vitest/vitest.mjs run test/tui-app.test.ts",
     "install-provider": "bun scripts/install.ts",
     "cli": "bun scripts/cli.ts",
     "install-cli": "bash scripts/install-cli.sh",
     "install:global": "bash scripts/install-cli.sh --path",
-    "setup": "bash install.sh --path"
+    "setup": "bash install.sh --path",
+    "install-tui": "bun scripts/install-tui.ts"
   },
   "dependencies": {
+    "@aws/codewhisperer-streaming-client": "1.0.45",
     "@opencode-ai/plugin": "^1.0.0",
     "@opencode-ai/sdk": "^1.0.0",
     "@opentui/core": "0.4.3",
+    "@smithy/node-http-handler": "^4.6.1",
     "zod": "^3.23.8"
   },
+  "optionalDependencies": {
+    "libsql": "^0.5.29"
+  },
+  "peerDependencies": {
+    "@opentui/solid": ">=0.4.3"
+  },
+  "peerDependenciesMeta": {
+    "@opentui/solid": {
+      "optional": true
+    }
+  },
   "devDependencies": {
+    "@opentui/solid": "0.4.3",
     "@types/node": "^20.14.0",
     "typescript": "^5.5.0",
     "vitest": "^2.0.0"

@@ -3,7 +3,7 @@ import type { Plugin } from "@opencode-ai/plugin";
 import { toRotationManager } from "../core/account-rotation.js";
 import { getAccountManager, type AccountManager } from "../core/accounts.js";
 import { logger } from "../core/logger.js";
-import { createRotationFetch } from "../core/rotation-fetch.js";
+import { createProviderFetch } from "../core/provider-fetch.js";
 import { rememberSessionOptions } from "../core/session-options.js";
 import { codexAdapter } from "../providers/codex/adapter.js";
 import { generatePkce, generateState } from "../providers/codex/auth/pkce.js";
@@ -107,7 +107,7 @@ const plugin: Plugin = async () => {
   bootstrapHostAuthIfNeeded(PROVIDER_ID);
   const manager = getAccountManager();
   await manager.load();
-  const customFetch = createRotationFetch(
+  const customFetch = createProviderFetch(
     codexAdapter,
     toRotationManager(manager, "codex"),
   );

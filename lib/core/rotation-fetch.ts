@@ -11,7 +11,9 @@
 
 import type {
   Classification,
+  HttpTransportAdapter,
   ProviderAdapter,
+  ProviderDescriptor,
   ProviderKind,
   SuccessRecordSink,
 } from "./adapter.js";
@@ -24,6 +26,7 @@ import {
 /** The input/init shapes of the runtime `fetch`, without relying on DOM libs. */
 type FetchInput = Parameters<typeof fetch>[0];
 type FetchInit = Parameters<typeof fetch>[1];
+type HttpProviderAdapter = ProviderDescriptor & HttpTransportAdapter;
 
 /** Fixed, bounded backoff for a single same-account transient retry. */
 export const TRANSIENT_BACKOFF_MS = 250;
@@ -197,7 +200,7 @@ interface Attempt {
  * Authorization is always built by the adapter (overwrite, never append).
  */
 async function doRequest(
-  adapter: ProviderAdapter,
+  adapter: HttpProviderAdapter,
   url: string,
   init: FetchInit | undefined,
   accessToken: string,
@@ -250,7 +253,7 @@ interface HandleCtx {
 }
 
 async function handleAttempt(
-  adapter: ProviderAdapter,
+  adapter: HttpProviderAdapter,
   manager: RotationManager,
   provider: ProviderKind,
   attempt: Attempt,
@@ -376,7 +379,21 @@ function asRecordSink(manager: RotationManager): SuccessRecordSink {
 export function createRotationFetch(
   adapter: ProviderAdapter,
   manager: RotationManager,
+): (input: FetchInput, init?: FetchInit) => Promise<Response>;
+export function createRotationFetch(
+  descriptor: ProviderDescriptor,
+  transport: HttpTransportAdapter,
+  manager: RotationManager,
+): (input: FetchInput, init?: FetchInit) => Promise<Response>;
+export function createRotationFetch(
+  descriptorOrAdapter: ProviderDescriptor | ProviderAdapter,
+  transportOrManager: HttpTransportAdapter | RotationManager,
+  explicitManager?: RotationManager,
 ): (input: FetchInput, init?: FetchInit) => Promise<Response> {
+  const adapter: HttpProviderAdapter = explicitManager
+    ? { ...descriptorOrAdapter, ...(transportOrManager as HttpTransportAdapter) }
+    : (descriptorOrAdapter as HttpProviderAdapter);
+  const manager = explicitManager ?? (transportOrManager as RotationManager);
   const provider = adapter.provider;
   const record = asRecordSink(manager);
 

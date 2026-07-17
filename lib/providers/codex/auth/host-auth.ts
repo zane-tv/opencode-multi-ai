@@ -1,11 +1,3 @@
-/**
- * OpenCode only invokes plugin auth.loader when auth.json has an entry for the
- * provider id (same bootstrap pattern as opencode-kiro-auth).
- *
- * Account pool truth lives in multi-codex-accounts.json; this file only seeds a
- * placeholder so customFetch is wired. Never stores real tokens here.
- */
-
 import {
   chmodSync,
   existsSync,
@@ -65,65 +57,102 @@ function writeAuthFile(
   renameSync(tempPath, authPath);
 }
 
+function placeholderEntry(
+  dummyKey: string,
+  accountId?: string,
+): Record<string, unknown> {
+  const next: Record<string, unknown> = {
+    type: "api",
+    key: dummyKey,
+  };
+  if (accountId) next.accountId = accountId;
+  return next;
+}
+
+function needsRewrite(
+  existing: unknown,
+  dummyKey: string,
+): existing is Record<string, unknown> {
+  if (existing === undefined || existing === null) return false;
+  if (typeof existing !== "object" || Array.isArray(existing)) return true;
+  const entry = existing as Record<string, unknown>;
+  if (entry.type !== "api") return true;
+  if (entry.key !== dummyKey) return true;
+  return false;
+}
+
 /**
- * Ensure auth.json has a codex-multi entry so OpenCode calls auth.loader
- * (which injects dummy apiKey + customFetch). Idempotent.
+ * Ensure auth.json has a provider entry so OpenCode calls auth.loader
+ * (which injects dummy apiKey + customFetch).
+ *
+ * Always rewrites oauth / wrong-type entries to a non-secret api placeholder.
+ * Pool tokens stay in multi-ai-accounts.json — never in auth.json.
  */
 export function bootstrapHostAuthIfNeeded(
   providerId: string = PROVIDER_ID,
+  dummyKey: string = DUMMY_API_KEY,
 ): boolean {
   try {
     const authPath = openCodeAuthPath();
     const auth = readAuthFile(authPath);
     if (!auth) return false;
-    if (auth[providerId] !== undefined) return false;
 
-    auth[providerId] = {
-      type: "api",
-      key: DUMMY_API_KEY,
-    };
+    const existing = auth[providerId];
+    if (existing !== undefined && !needsRewrite(existing, dummyKey)) {
+      return false;
+    }
+
+    let accountId: string | undefined;
+    if (
+      existing !== null &&
+      typeof existing === "object" &&
+      !Array.isArray(existing)
+    ) {
+      const prev = existing as Record<string, unknown>;
+      if (typeof prev.accountId === "string") accountId = prev.accountId;
+    }
+
+    auth[providerId] = placeholderEntry(dummyKey, accountId);
     writeAuthFile(authPath, auth);
     logger.debug(
-      `host-auth: wrote placeholder auth entry for "${providerId}"`,
+      `host-auth: wrote api placeholder for "${providerId}"` +
+        (existing !== undefined ? " (rewrote prior entry)" : ""),
     );
     return true;
   } catch (err) {
-    logger.warn(
-      `host-auth bootstrap failed: ${(err as Error).message}`,
-    );
+    logger.warn(`host-auth bootstrap failed: ${(err as Error).message}`);
     return false;
   }
 }
 
 /**
- * After a successful OAuth login, mirror a non-secret host auth marker so
- * OpenCode keeps calling the loader (pool tokens stay in multi-codex-accounts).
+ * After a successful OAuth login, force a non-secret host auth marker so
+ * OpenCode keeps calling the loader (pool tokens stay in multi-ai-accounts).
+ * Never leaves type=oauth in auth.json — expired host oauth sends dummy keys.
  */
 export function ensureHostAuthAfterLogin(
   providerId: string = PROVIDER_ID,
   accountId?: string,
+  dummyKey: string = DUMMY_API_KEY,
 ): void {
   try {
     const authPath = openCodeAuthPath();
     const auth = readAuthFile(authPath);
     if (!auth) return;
 
+    let resolvedAccountId = accountId;
     const prev = auth[providerId];
-    const next: Record<string, unknown> = {
-      type: "api",
-      key: DUMMY_API_KEY,
-    };
-    if (accountId) next.accountId = accountId;
-    // Preserve oauth shape if user logged via opencode auth login, but always
-    // ensure type is present so loader runs.
-    if (prev && typeof prev === "object" && !Array.isArray(prev)) {
+    if (
+      !resolvedAccountId &&
+      prev !== null &&
+      typeof prev === "object" &&
+      !Array.isArray(prev)
+    ) {
       const p = prev as Record<string, unknown>;
-      if (p.type === "oauth") {
-        // Keep existing oauth tokens if host already has them; still fine.
-        return;
-      }
+      if (typeof p.accountId === "string") resolvedAccountId = p.accountId;
     }
-    auth[providerId] = next;
+
+    auth[providerId] = placeholderEntry(dummyKey, resolvedAccountId);
     writeAuthFile(authPath, auth);
   } catch (err) {
     logger.debug(

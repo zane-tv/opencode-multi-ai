@@ -129,9 +129,18 @@ describe("renderStatusLine", () => {
 
   it("omits zero-count segments (no '0 quota' noise)", () => {
     const line = renderStatusLine([makeAccount("a0")], 0, NOW);
-    expect(line).toBe("ai: a0 · 1 ready");
+    expect(line).toBe("ai: ★ ACTIVE a0 · 1 ready");
     expect(line).not.toContain("quota");
     expect(line).not.toContain("cooling");
+  });
+
+  it("prefixes sticky active with ★ ACTIVE", () => {
+    const accounts = [
+      makeAccount("a0", { label: "work" }),
+      makeAccount("a1", { label: "alt" }),
+    ];
+    expect(renderStatusLine(accounts, 0, NOW)).toContain("★ ACTIVE work");
+    expect(renderStatusLine(accounts, 1, NOW)).toContain("★ ACTIVE alt");
   });
 
   it("emits a ⚠ warning badge when any account is dead or flagged", () => {

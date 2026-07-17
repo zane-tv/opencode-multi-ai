@@ -9,7 +9,8 @@
 import type {
   BuildHeadersContext,
   Classification,
-  ProviderAdapter,
+  HttpTransportAdapter,
+  TransportProviderAdapter,
   RecordSuccessContext,
   ResolveModelsOptions,
   TransformBodyContext,
@@ -98,7 +99,34 @@ function usageLine(
   return `${label}: ${left} (${win})${until}`;
 }
 
-export const codexAdapter: ProviderAdapter = {
+async function recordCodexSuccess(ctx: RecordSuccessContext): Promise<void> {
+  try {
+    const snap = parseUsageHeaders(ctx.response.headers);
+    const hasSignal =
+      snap.planType !== undefined ||
+      snap.primaryUsedPercent !== undefined ||
+      snap.secondaryUsedPercent !== undefined ||
+      snap.activeLimit !== undefined ||
+      snap.primaryWindowMinutes !== undefined ||
+      snap.secondaryWindowMinutes !== undefined;
+    if (!hasSignal || !ctx.record.recordUsage) return;
+    await ctx.record.recordUsage(ctx.accountId, {
+      planType: snap.planType,
+      primaryUsedPercent: snap.primaryUsedPercent,
+      primaryWindowMinutes: snap.primaryWindowMinutes,
+      primaryResetAt: snap.primaryResetAt,
+      secondaryUsedPercent: snap.secondaryUsedPercent,
+      secondaryWindowMinutes: snap.secondaryWindowMinutes,
+      secondaryResetAt: snap.secondaryResetAt,
+      activeLimit: snap.activeLimit,
+      observedAt: snap.observedAt,
+    });
+  } catch {
+    return;
+  }
+}
+
+export const codexAdapter: TransportProviderAdapter & HttpTransportAdapter = {
   id: PROVIDER_ID,
   provider: "codex",
   displayName: "Codex Multi-Account",
@@ -156,33 +184,7 @@ export const codexAdapter: ProviderAdapter = {
     return classifyCodexThrownError(err);
   },
 
-  async recordSuccess(ctx: RecordSuccessContext): Promise<void> {
-    try {
-      const snap = parseUsageHeaders(ctx.response.headers);
-      const hasSignal =
-        snap.planType !== undefined ||
-        snap.primaryUsedPercent !== undefined ||
-        snap.secondaryUsedPercent !== undefined ||
-        snap.activeLimit !== undefined ||
-        snap.primaryWindowMinutes !== undefined ||
-        snap.secondaryWindowMinutes !== undefined;
-      if (!hasSignal) return;
-      if (!ctx.record.recordUsage) return;
-      await ctx.record.recordUsage(ctx.accountId, {
-        planType: snap.planType,
-        primaryUsedPercent: snap.primaryUsedPercent,
-        primaryWindowMinutes: snap.primaryWindowMinutes,
-        primaryResetAt: snap.primaryResetAt,
-        secondaryUsedPercent: snap.secondaryUsedPercent,
-        secondaryWindowMinutes: snap.secondaryWindowMinutes,
-        secondaryResetAt: snap.secondaryResetAt,
-        activeLimit: snap.activeLimit,
-        observedAt: snap.observedAt,
-      });
-    } catch {
-      /* never throw into the success path */
-    }
-  },
+  recordSuccess: recordCodexSuccess,
 
   async probeQuota(
     accessToken: string,
@@ -281,6 +283,51 @@ export const codexAdapter: ProviderAdapter = {
     ensureAfterLogin(providerId: string, accountId?: string): void {
       ensureHostAuthAfterLogin(providerId, accountId);
     },
+  },
+  transport: {
+    kind: "http",
+    resolveUrl(input: string | URL): string {
+      return rewriteUrlForCodex(input);
+    },
+    buildHeaders(ctx: BuildHeadersContext): Headers {
+      const headers = createCodexHeaders({
+        accessToken: ctx.accessToken,
+        accountId: ctx.accountId,
+        organizationId: ctx.organizationId,
+        promptCacheKey: ctx.promptCacheKey,
+      });
+      if (ctx.initHeaders) {
+        const init = new Headers(ctx.initHeaders);
+        init.forEach((value, key) => {
+          const lower = key.toLowerCase();
+          if (lower === "authorization" || lower === "x-api-key") return;
+          if (!headers.has(key)) headers.set(key, value);
+        });
+      }
+      headers.set("Authorization", `Bearer ${ctx.accessToken}`);
+      headers.delete("x-api-key");
+      return headers;
+    },
+    transformBody(
+      init: RequestInit | undefined,
+      ctx: TransformBodyContext,
+    ): RequestInit | undefined {
+      void ctx.url;
+      return transformCodexRequestInit(
+        init,
+        sessionOptionsToBody(ctx.sessionOptions),
+      );
+    },
+    classifyResponse(
+      res: Response,
+      bodyText: string,
+    ): Classification | Promise<Classification> {
+      return classifyCodexResponse(res.status, res.headers, bodyText);
+    },
+    classifyThrownError(err: unknown): Classification {
+      return classifyCodexThrownError(err);
+    },
+    recordSuccess: recordCodexSuccess,
   },
 };
 

@@ -14,16 +14,17 @@ import {
 } from "../lib/tui/tabs.js";
 
 describe("tui tab state machine", () => {
-  it("toggles between xai and codex", () => {
-    expect(nextTab("xai")).toBe("codex");
+  it("cycles codex → xai → kiro (Codex-first order)", () => {
     expect(nextTab("codex")).toBe("xai");
-    expect(prevTab("xai")).toBe("codex");
+    expect(nextTab("xai")).toBe("kiro");
+    expect(nextTab("kiro")).toBe("codex");
+    expect(prevTab("codex")).toBe("kiro");
   });
 
-  it("maps digit keys to tabs", () => {
-    expect(tabFromKey("1")).toBe("xai");
-    expect(tabFromKey("2")).toBe("codex");
-    expect(tabFromKey("3")).toBeUndefined();
+  it("maps digit keys to tab bar order (1=Codex, 2=xAI, 3=Kiro)", () => {
+    expect(tabFromKey("1")).toBe("codex");
+    expect(tabFromKey("2")).toBe("xai");
+    expect(tabFromKey("3")).toBe("kiro");
     expect(tabFromKey("tab")).toBeUndefined();
   });
 
@@ -44,11 +45,11 @@ describe("tui tab state machine", () => {
     expect(state.xai).toBe(1);
   });
 
-  it("renders active tab brackets", () => {
-    expect(renderTabBar("xai")).toContain("[xAI]");
-    expect(renderTabBar("xai")).toContain(" Codex ");
-    expect(renderTabBar("codex")).toContain("[Codex]");
+  it("renders active tab brackets with Codex first", () => {
+    expect(renderTabBar("codex")).toMatch(/^\[Codex\]/);
     expect(renderTabBar("codex")).toContain(" xAI ");
+    expect(renderTabBar("xai")).toContain(" Codex ");
+    expect(renderTabBar("xai")).toContain("[xAI]");
   });
 
   it("stale live results are ignored after tab switch generation bump", () => {

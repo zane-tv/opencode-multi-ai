@@ -34,6 +34,7 @@ import type {
 import { saveAccounts } from "../lib/core/storage.js";
 import {
   buildCodexTools,
+  buildKiroTools,
   buildTools,
   buildXaiTools,
 } from "../lib/tools/registry.js";
@@ -75,7 +76,7 @@ async function writeStore(
   accounts: AccountMetadata[],
   sticky: AccountStorage["sticky"] = {},
 ): Promise<void> {
-  await saveAccounts({ version: 2, accounts, sticky }, storePath);
+  await saveAccounts({ version: 3, accounts, sticky }, storePath);
 }
 
 function ctx(): ToolContext {
@@ -209,20 +210,24 @@ describe("account management tools (provider-scoped)", () => {
     expect(out).toContain("xai-multi");
   });
 
-  it("codex tools include import; xai tools do not", () => {
+  it("codex/kiro tools include import; xai tools do not", () => {
     const xai = buildXaiTools(manager);
     const codex = buildCodexTools(manager);
+    const kiro = buildKiroTools(manager);
     expect(xai["codex-import"]).toBeUndefined();
     expect(xai["xai-import"]).toBeUndefined();
     expect(codex["codex-import"]).toBeDefined();
+    expect(kiro["kiro-import"]).toBeDefined();
   });
 
-  it("buildTools returns both maps with prefixed names", () => {
-    const { xai, codex, all } = buildTools(manager);
+  it("buildTools returns three maps with prefixed names", () => {
+    const { xai, codex, kiro, all } = buildTools(manager);
     expect(Object.keys(xai).every((k) => k.startsWith("xai-"))).toBe(true);
     expect(Object.keys(codex).every((k) => k.startsWith("codex-"))).toBe(true);
+    expect(Object.keys(kiro).every((k) => k.startsWith("kiro-"))).toBe(true);
     expect(all["xai-list"]).toBeDefined();
     expect(all["codex-list"]).toBeDefined();
+    expect(all["kiro-list"]).toBeDefined();
   });
 
   it("resolveAccount is pure over a provider list", () => {

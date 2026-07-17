@@ -61,6 +61,8 @@ export const XAI_API_HOST = "api.x.ai";
 /** Custom provider id. Do NOT override the built-in `xai` provider. */
 export const PROVIDER_ID = "xai-multi";
 
+export const DUMMY_API_KEY = "multi-xai-dummy-key";
+
 /**
  * Refresh access tokens this many ms BEFORE their real expiry, to avoid
  * racing the expiry boundary.

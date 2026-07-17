@@ -10,7 +10,9 @@
     "noEmit": true,
     "resolveJsonModule": true,
     "forceConsistentCasingInFileNames": true,
+    "jsx": "preserve",
+    "jsxImportSource": "@opentui/solid",
     "types": ["node"]
   },
-  "include": ["index.ts", "lib/**/*.ts", "scripts", "test"]
+  "include": ["index.ts", "lib/**/*.ts", "lib/**/*.tsx", "scripts", "test"]
 }

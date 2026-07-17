@@ -112,7 +112,7 @@ function makeCodex(
 async function seedStore(storePath: string): Promise<void> {
   await saveAccounts(
     {
-      version: 2,
+      version: 3,
       accounts: [
         makeXai("xai-a", { priority: 10, label: "work-xai" }),
         makeXai("xai-b", { priority: 5, label: "alt-xai" }),
@@ -450,7 +450,7 @@ const hasOpenTuiFfi = typeof (globalThis as { Bun?: unknown }).Bun !== "undefine
 
     setup.mockInput.pressKey("?");
     await setup.renderOnce();
-    setup.mockInput.pressKey("1");
+    setup.mockInput.pressKey("2");
     await setup.renderOnce();
     setup.mockInput.pressKey("?");
     await setup.renderOnce();
@@ -483,7 +483,7 @@ const hasOpenTuiFfi = typeof (globalThis as { Bun?: unknown }).Bun !== "undefine
       spanHasRgb(setup, 14, 165, 233);
     expect(xaiOk).toBe(true);
 
-    setup.mockInput.pressKey("2");
+    setup.mockInput.pressKey("1");
     await setup.renderOnce();
     const codexOk =
       spanHasRgb(setup, 52, 211, 153) ||
@@ -654,14 +654,14 @@ const hasOpenTuiFfi = typeof (globalThis as { Bun?: unknown }).Bun !== "undefine
     const xaiBefore = manager.providerView("xai").list().length;
     s.mockInput.pressKey("p");
     await s.renderOnce();
-    s.mockInput.pressKey("1");
+    s.mockInput.pressKey("2");
     await s.renderOnce();
     s.mockInput.pressKey("p");
     await s.renderOnce();
     expect(manager.providerView("codex").list().length).toBe(2);
     expect(manager.providerView("xai").list().length).toBe(xaiBefore);
 
-    s.mockInput.pressKey("2");
+    s.mockInput.pressKey("1");
     await s.renderOnce();
     s.mockInput.pressKey("p");
     await s.renderOnce();
@@ -956,10 +956,9 @@ const hasOpenTuiFfi = typeof (globalThis as { Bun?: unknown }).Bun !== "undefine
     });
     probeXai.mockImplementation(async () => gate);
     probeCodex.mockClear();
-    // trigger refresh on xai then switch tab before it resolves
     s.mockInput.pressKey("r");
     await s.renderOnce();
-    s.mockInput.pressKey("2");
+    s.mockInput.pressKey("1");
     await s.renderOnce();
     resolveProbe({
       billing: {
@@ -970,7 +969,6 @@ const hasOpenTuiFfi = typeof (globalThis as { Bun?: unknown }).Bun !== "undefine
       plan: { planName: "late", observedAt: Date.now() },
     });
     await new Promise((r) => setTimeout(r, 120));
-    // codex should not have been probed; xai may record but active tab is codex
     expect(probeCodex).not.toHaveBeenCalled();
     expect(manager.providerView("codex").list().length).toBe(2);
   });
@@ -1007,7 +1005,7 @@ const hasOpenTuiFfi = typeof (globalThis as { Bun?: unknown }).Bun !== "undefine
     harness = null;
   });
 
-  it("action pane renders localized action labels EN and VI after g", async () => {
+  it("action pane shows main menu categories EN and VI after g", async () => {
     harness = await launchTui({ storePath, settingsPath });
     const s = harness.setup();
     const actionNode = s.renderer.root.findDescendantById(
@@ -1015,41 +1013,91 @@ const hasOpenTuiFfi = typeof (globalThis as { Bun?: unknown }).Bun !== "undefine
     ) as SelectRenderable;
     expect(actionNode).toBeInstanceOf(SelectRenderable);
     const enNames = actionNode.options.map((o) => String(o.name));
-    expect(enNames.some((n) => /disable|Disable/i.test(n))).toBe(true);
-    expect(enNames.some((n) => n.includes("d "))).toBe(true);
+    expect(enNames.some((n) => /Account/i.test(n))).toBe(true);
+    expect(enNames.some((n) => /Quota|Danger|Edit|Add/i.test(n))).toBe(true);
     const frameEn = frameOf(s);
-    expect(frameEn.toLowerCase()).toMatch(/actions|disable|switch/);
+    expect(frameEn.toLowerCase()).toMatch(/actions|account|quota/);
 
     s.mockInput.pressKey("g");
     await s.renderOnce();
     await s.flush().catch(() => undefined);
     expect(getLocale()).toBe("vi");
     const viNames = actionNode.options.map((o) => String(o.name));
-    expect(viNames.length).toBe(TUI_BINDINGS.filter((b) => b.available).length);
+    expect(viNames.length).toBeGreaterThanOrEqual(5);
     const frameVi = frameOf(s);
-    expect(frameVi.toLowerCase()).toMatch(/thao tác|tắt|chuyển|thoát/);
+    expect(frameVi.toLowerCase()).toMatch(/thao tác|tài khoản|hạn mức|thoát/);
   });
 
-  it("Shift+Tab focuses actions; Enter on disable runs action on selected account", async () => {
+  function menuValue(o: { value?: unknown }): {
+    type?: string;
+    group?: string;
+    action?: string;
+  } {
+    const v = o.value;
+    if (typeof v === "string") {
+      if (v === "back") return { type: "back" };
+      if (v.startsWith("open:")) return { type: "open", group: v.slice(5) };
+      if (v.startsWith("run:")) return { type: "run", action: v.slice(4) };
+      if (v.startsWith("{")) {
+        try {
+          return JSON.parse(v) as {
+            type?: string;
+            group?: string;
+            action?: string;
+          };
+        } catch {
+          return {};
+        }
+      }
+      return { type: "run", action: v };
+    }
+    if (v && typeof v === "object") {
+      return v as { type?: string; group?: string; action?: string };
+    }
+    return {};
+  }
+
+  function openActionGroup(
+    actionNode: SelectRenderable,
+    group: "account" | "edit" | "add" | "quota" | "danger",
+  ): void {
+    const idx = actionNode.options.findIndex((o) => {
+      const v = menuValue(o);
+      return v.type === "open" && v.group === group;
+    });
+    expect(idx).toBeGreaterThanOrEqual(0);
+    actionNode.setSelectedIndex(idx);
+    actionNode.selectCurrent();
+  }
+
+  function selectRunAction(
+    actionNode: SelectRenderable,
+    action: string,
+  ): void {
+    const idx = actionNode.options.findIndex((o) => {
+      const v = menuValue(o);
+      return v.type === "run" && v.action === action;
+    });
+    expect(idx).toBeGreaterThanOrEqual(0);
+    actionNode.setSelectedIndex(idx);
+    actionNode.selectCurrent();
+  }
+
+  it("Shift+Tab focuses actions; submenu disable runs on selected account", async () => {
     harness = await launchTui({ storePath, settingsPath });
     const { manager, setup } = harness;
     const s = setup();
     const actionNode = s.renderer.root.findDescendantById(
       "actions",
     ) as SelectRenderable;
-    const disableIdx = actionNode.options.findIndex(
-      (o) => o.value === "disable",
-    );
-    expect(disableIdx).toBeGreaterThanOrEqual(0);
 
     s.mockInput.pressTab({ shift: true });
     await s.renderOnce();
     expect(frameOf(s)).toMatch(/work-xai|xai/i);
     actionNode.focus();
-    actionNode.setSelectedIndex(disableIdx);
+    openActionGroup(actionNode, "account");
     await s.renderOnce();
-    expect(actionNode.getSelectedOption()?.value).toBe("disable");
-    actionNode.selectCurrent();
+    selectRunAction(actionNode, "disable");
     await s.renderOnce();
     await new Promise((r) => setTimeout(r, 200));
     expect(manager.providerView("xai").get("xai-a")?.enabled).toBe(false);
@@ -1057,27 +1105,22 @@ const hasOpenTuiFfi = typeof (globalThis as { Bun?: unknown }).Bun !== "undefine
 
     await manager.providerView("xai").setEnabled("xai-a", true);
     await s.renderOnce();
-    actionNode.focus();
-    actionNode.setSelectedIndex(disableIdx);
-    await s.renderOnce();
-    s.mockInput.pressEnter();
+    selectRunAction(actionNode, "disable");
     await s.renderOnce();
     await new Promise((r) => setTimeout(r, 200));
     expect(manager.providerView("xai").get("xai-a")?.enabled).toBe(false);
   });
 
-  it("actionSelect selectCurrent (ITEM_SELECTED) runs runAction", async () => {
+  it("actionSelect submenu ITEM_SELECTED runs runAction", async () => {
     harness = await launchTui({ storePath, settingsPath });
     const { manager, setup } = harness;
     const s = setup();
     const actionNode = s.renderer.root.findDescendantById(
       "actions",
     ) as SelectRenderable;
-    const flagIdx = actionNode.options.findIndex((o) => o.value === "flag");
-    expect(flagIdx).toBeGreaterThanOrEqual(0);
-    actionNode.setSelectedIndex(flagIdx);
+    openActionGroup(actionNode, "danger");
     await s.renderOnce();
-    actionNode.selectCurrent();
+    selectRunAction(actionNode, "flag");
     await s.renderOnce();
     await new Promise((r) => setTimeout(r, 150));
     expect(manager.providerView("xai").get("xai-a")?.flaggedForRemoval).toBe(
@@ -1137,9 +1180,12 @@ const hasOpenTuiFfi = typeof (globalThis as { Bun?: unknown }).Bun !== "undefine
     await s.renderOnce();
     expect(acc.getSelectedIndex()).toBe(1);
 
-    const disableIdx = act.options.findIndex((o) => o.value === "disable");
-    expect(disableIdx).toBeGreaterThanOrEqual(0);
-    act.setSelectedIndex(disableIdx);
+    const accountGroupIdx = act.options.findIndex((o) => {
+      const v = menuValue(o);
+      return v.type === "open" && v.group === "account";
+    });
+    expect(accountGroupIdx).toBeGreaterThanOrEqual(0);
+    act.setSelectedIndex(accountGroupIdx);
     await s.renderOnce();
     const actPriv = act as unknown as {
       linesPerItem?: number;
@@ -1147,10 +1193,29 @@ const hasOpenTuiFfi = typeof (globalThis as { Bun?: unknown }).Bun !== "undefine
     };
     const actLines = Math.max(1, actPriv.linesPerItem ?? 2);
     const actScroll = actPriv.scrollOffset ?? 0;
-    const actLocalY = (disableIdx - actScroll) * actLines;
+    const openLocalY = (accountGroupIdx - actScroll) * actLines;
     act.tuiOnMouseDown!({
       x: act.x + 1,
-      y: act.y + Math.max(0, actLocalY),
+      y: act.y + Math.max(0, openLocalY),
+      stopPropagation: () => undefined,
+      preventDefault: () => undefined,
+    });
+    await s.renderOnce();
+    await new Promise((r) => setTimeout(r, 80));
+
+    const disableIdx = act.options.findIndex((o) => {
+      const v = menuValue(o);
+      return v.type === "run" && v.action === "disable";
+    });
+    expect(disableIdx).toBeGreaterThanOrEqual(0);
+    act.setSelectedIndex(disableIdx);
+    await s.renderOnce();
+    const actScroll2 =
+      (act as unknown as { scrollOffset?: number }).scrollOffset ?? 0;
+    const disableLocalY = (disableIdx - actScroll2) * actLines;
+    act.tuiOnMouseDown!({
+      x: act.x + 1,
+      y: act.y + Math.max(0, disableLocalY),
       stopPropagation: () => undefined,
       preventDefault: () => undefined,
     });

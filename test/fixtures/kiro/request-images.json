@@ -1,0 +1,24 @@
+{
+  "conversationState": {
+    "chatTriggerType": "MANUAL",
+    "conversationId": "conversation-fixture",
+    "currentMessage": {
+      "userInputMessage": {
+        "content": "Look",
+        "modelId": "claude-opus-4.8",
+        "origin": "AI_EDITOR",
+        "images": [
+          {
+            "format": "png",
+            "source": {
+              "bytes": [
+                104,
+                105
+              ]
+            }
+          }
+        ]
+      }
+    }
+  }
+}

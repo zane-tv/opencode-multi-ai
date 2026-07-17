@@ -122,7 +122,7 @@ describe("migrateAccountsIfNeeded (truth table)", () => {
     expect(result.warnings).toEqual([]);
 
     const v2 = await loadAccounts(fx.unifiedPath);
-    expect(v2.version).toBe(2);
+    expect(v2.version).toBe(3);
     expect(v2.accounts).toHaveLength(2);
     expect(v2.accounts.map((a) => a.provider).sort()).toEqual([
       "codex",
@@ -210,7 +210,7 @@ describe("migrateAccountsIfNeeded (truth table)", () => {
   it("6. v2 already exists → skip, no clobber of v2 accounts", async () => {
     await saveAccounts(
       {
-        version: 2,
+        version: 3,
         accounts: [
           {
             provider: "xai",
@@ -259,7 +259,7 @@ describe("migrateAccountsIfNeeded (truth table)", () => {
   it("6b. v2 has both providers → full skip, no clobber", async () => {
     await saveAccounts(
       {
-        version: 2,
+        version: 3,
         accounts: [
           {
             provider: "xai",
@@ -425,7 +425,7 @@ describe("migrateAccountsIfNeeded (truth table)", () => {
     try {
       await saveAccounts(
         {
-          version: 2,
+          version: 3,
           accounts: [
             {
               provider: "xai",

@@ -1,0 +1,27 @@
+{
+  "conversationState": {
+    "chatTriggerType": "MANUAL",
+    "conversationId": "conversation-fixture",
+    "history": [
+      {
+        "userInputMessage": {
+          "content": "<thinking_mode>enabled</thinking_mode><max_thinking_length>12000</max_thinking_length>\nGlobal instructions\n\nSystem message\n\nFirst",
+          "modelId": "claude-opus-4.8",
+          "origin": "AI_EDITOR"
+        }
+      },
+      {
+        "assistantResponseMessage": {
+          "content": "Second"
+        }
+      }
+    ],
+    "currentMessage": {
+      "userInputMessage": {
+        "content": "Final",
+        "modelId": "claude-opus-4.8",
+        "origin": "AI_EDITOR"
+      }
+    }
+  }
+}

@@ -3,6 +3,8 @@ import { migrateAccountsIfNeeded } from "../migrate.js";
 import { defaultStoragePath } from "./paths.js";
 import type {
   AccountMetadata,
+  AccountOf,
+  AccountSelectionStrategy,
   AccountStorage,
   CooldownReason,
   ProviderKind,
@@ -13,7 +15,7 @@ import {
   withCrossProcessTransaction,
 } from "./storage.js";
 
-const MAX_ACCOUNTS = 20;
+const MAX_ACCOUNTS_PER_PROVIDER = 20;
 const TOKEN_REFRESH_SKEW_MS = 60_000;
 
 type Tokens = {
@@ -22,7 +24,61 @@ type Tokens = {
   expiresAt: number;
 };
 
+/** Legacy refresh signature (refresh token only). Normalized to a driver. */
 export type RefreshFn = (refreshToken: string) => Promise<Tokens>;
+
+/** Refresh driver: gets the full narrowed account (kiro needs more than the token). */
+export interface RefreshDriver<P extends ProviderKind> {
+  refresh(account: AccountOf<P>, ctx: { force: boolean }): Promise<Tokens>;
+}
+
+export type RefreshDrivers = {
+  [P in ProviderKind]?: RefreshDriver<P>;
+};
+
+export type RefreshInput<P extends ProviderKind> = RefreshFn | RefreshDriver<P>;
+export type RefreshInputs = {
+  [P in ProviderKind]?: RefreshInput<P>;
+};
+
+function toRefreshDriver<P extends ProviderKind>(
+  input: RefreshInput<P>,
+): RefreshDriver<P> {
+  if (typeof input === "function") {
+    return { refresh: (account) => input(account.refreshToken) };
+  }
+  return input;
+}
+
+/** OAuth refresh map for plugins/tools/CLI/TUI (dynamic import avoids cycles). */
+export function createDefaultRefreshHandlers(): RefreshDrivers {
+  return {
+    xai: {
+      refresh: async (account) => {
+        const { refreshTokens } = await import(
+          "../providers/xai/auth/oauth.js"
+        );
+        return refreshTokens(account.refreshToken);
+      },
+    },
+    codex: {
+      refresh: async (account) => {
+        const { refreshTokens } = await import(
+          "../providers/codex/auth/oauth.js"
+        );
+        return refreshTokens(account.refreshToken);
+      },
+    },
+    kiro: {
+      refresh: async (account) => {
+        const { refreshKiroAccount } = await import(
+          "../providers/kiro/auth/refresh.js"
+        );
+        return refreshKiroAccount(account);
+      },
+    },
+  };
+}
 
 type RateLimitSnapshot = {
   readonly limitRequests?: number;
@@ -62,12 +118,22 @@ type UsageSnapshot = {
   readonly observedAt?: number;
 };
 
+type KiroUsageSnapshot = {
+  readonly usedCount?: number;
+  readonly limitCount?: number;
+  readonly email?: string;
+  readonly observedAt?: number;
+};
+
 export interface ProviderAccountView {
   readonly provider: ProviderKind;
   list(): AccountMetadata[];
   get(id: string): AccountMetadata | undefined;
   sticky(): string | undefined;
-  selectAccount(attempted: Set<string>): AccountMetadata | null;
+  selectAccount(
+    attempted: Set<string>,
+    policy?: AccountSelectionStrategy,
+  ): AccountMetadata | null;
   add(account: AccountMetadata): Promise<void>;
   remove(id: string): Promise<void>;
   upsertFromOAuth(account: AccountMetadata): Promise<"added" | "updated">;
@@ -85,6 +151,7 @@ export interface ProviderAccountView {
   recordBillingQuota(id: string, snap: BillingQuotaSnapshot): Promise<void>;
   recordPlan(id: string, snap: PlanSnapshot): Promise<void>;
   recordUsage(id: string, snap: UsageSnapshot): Promise<void>;
+  recordKiroUsage(id: string, snap: KiroUsageSnapshot): Promise<void>;
   switchTo(id: string): Promise<void>;
   setEnabled(id: string, enabled: boolean): Promise<void>;
   setLabel(id: string, label?: string): Promise<void>;
@@ -96,6 +163,8 @@ export interface ProviderAccountView {
   moveToFront(id: string): Promise<void>;
   setFlaggedForRemoval(id: string, flagged: boolean): Promise<void>;
   prunableAccounts(): AccountMetadata[];
+  deadAccounts(): AccountMetadata[];
+  cleanDeadAccounts(): Promise<{ removed: string[] }>;
   pruneAccounts(ids: string[]): Promise<{ removed: string[] }>;
 }
 
@@ -138,8 +207,127 @@ export function isSelectable(account: AccountMetadata, now: number): boolean {
   return true;
 }
 
-function sortAccountsByPriority(storage: AccountStorage): void {
+export function isRotationReady(
+  account: AccountMetadata,
+  now: number,
+): boolean {
+  if (!isSelectable(account, now)) return false;
+
+  if (account.provider === "codex") {
+    const primaryFull =
+      typeof account.primaryUsedPercent === "number" &&
+      account.primaryUsedPercent >= 100;
+    if (primaryFull) {
+      const secondaryOpen =
+        typeof account.secondaryWindowMinutes === "number" &&
+        account.secondaryWindowMinutes > 0 &&
+        typeof account.secondaryUsedPercent === "number" &&
+        account.secondaryUsedPercent < 100;
+      if (!secondaryOpen) return false;
+    }
+  }
+
+  if (account.provider === "xai") {
+    const rem = account.billingRemainingPercent;
+    if (typeof rem === "number" && rem <= 0) return false;
+    if (
+      typeof account.planUsed === "number" &&
+      typeof account.planMonthlyLimit === "number" &&
+      account.planMonthlyLimit > 0 &&
+      account.planUsed >= account.planMonthlyLimit
+    ) {
+      return false;
+    }
+  }
+
+  if (account.provider === "kiro") {
+    if (
+      typeof account.usedCount === "number" &&
+      typeof account.limitCount === "number" &&
+      account.limitCount > 0 &&
+      account.usedCount >= account.limitCount
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+export function resolveActiveAccount(
+  storage: AccountStorage,
+  provider: ProviderKind,
+  now: number = Date.now(),
+): AccountMetadata | undefined {
+  const pool = storage.accounts.filter(
+    (account) => account.provider === provider,
+  );
+  if (pool.length === 0) return undefined;
+
+  const ready = pool.filter((account) => isRotationReady(account, now));
+  const stickyId = storage.sticky[provider];
+  if (stickyId) {
+    const sticky = ready.find((account) => account.accountId === stickyId);
+    if (sticky) return sticky;
+  }
+
+  if (ready.length > 0) {
+    return ready.reduce((best, candidate) => {
+      if (candidate.priority !== best.priority) {
+        return candidate.priority > best.priority ? candidate : best;
+      }
+      if (candidate.lastUsed !== best.lastUsed) {
+        return candidate.lastUsed > best.lastUsed ? candidate : best;
+      }
+      return candidate.addedAt < best.addedAt ? candidate : best;
+    });
+  }
+
+  if (stickyId) {
+    const sticky = pool.find((account) => account.accountId === stickyId);
+    if (sticky && sticky.enabled && sticky.subscriptionStatus !== "dead") {
+      return sticky;
+    }
+  }
+
+  const alive = pool.filter(
+    (account) =>
+      account.enabled && account.subscriptionStatus !== "dead",
+  );
+  return alive[0] ?? pool[0];
+}
+
+/**
+ * Lower rank = earlier in list. Ready/active first, then cooling/quota,
+ * disabled/entitlement, dead last. Within a rank: priority DESC, addedAt ASC.
+ */
+export function accountHealthRank(
+  account: AccountMetadata,
+  now: number,
+): number {
+  if (account.subscriptionStatus === "dead") return 40;
+  if (account.entitlementBlocked) return 30;
+  if (!account.enabled) return 25;
+  if (typeof account.quotaResetAt === "number" && account.quotaResetAt > now) {
+    return 20;
+  }
+  if (
+    typeof account.coolingDownUntil === "number" &&
+    account.coolingDownUntil > now
+  ) {
+    return 10;
+  }
+  return 0;
+}
+
+function sortAccountsByPriority(
+  storage: AccountStorage,
+  now: number = Date.now(),
+): void {
   storage.accounts.sort((left, right) => {
+    const healthDelta =
+      accountHealthRank(left, now) - accountHealthRank(right, now);
+    if (healthDelta !== 0) return healthDelta;
     if (right.priority !== left.priority) {
       return right.priority - left.priority;
     }
@@ -151,6 +339,40 @@ function clearSticky(storage: AccountStorage, provider: ProviderKind): void {
   delete storage.sticky[provider];
 }
 
+function demoteAccountInProvider(
+  storage: AccountStorage,
+  provider: ProviderKind,
+  account: AccountMetadata,
+): void {
+  const providerAccounts = storage.accounts.filter(
+    (candidate) => candidate.provider === provider,
+  );
+  const minimumPriority = Math.min(
+    ...providerAccounts.map((candidate) => candidate.priority),
+  );
+  account.priority = minimumPriority - 1;
+  sortAccountsByPriority(storage);
+}
+
+function switchStickyIfUnselectable(
+  storage: AccountStorage,
+  provider: ProviderKind,
+  id: string,
+  now: number = Date.now(),
+): void {
+  if (storage.sticky[provider] !== id) return;
+  const account = storage.accounts.find((candidate) =>
+    matchesIdentity(candidate, provider, id),
+  );
+  if (account && isSelectable(account, now)) return;
+  const replacement = storage.accounts.find(
+    (candidate) =>
+      candidate.provider === provider && isSelectable(candidate, now),
+  );
+  if (replacement) storage.sticky[provider] = replacement.accountId;
+  else clearSticky(storage, provider);
+}
+
 function mergeOAuthAccount(
   current: AccountMetadata,
   incoming: AccountMetadata,
@@ -159,6 +381,7 @@ function mergeOAuthAccount(
   current.accessToken = incoming.accessToken;
   current.expiresAt = incoming.expiresAt;
   if (incoming.email !== undefined) current.email = incoming.email;
+  if (incoming.label !== undefined) current.label = incoming.label;
   if (incoming.oauthScope !== undefined) current.oauthScope = incoming.oauthScope;
   current.subscriptionStatus = "active";
   current.entitlementBlocked = false;
@@ -212,6 +435,33 @@ function mergeOAuthAccount(
     if (incoming.usageObservedAt !== undefined) {
       current.usageObservedAt = incoming.usageObservedAt;
     }
+    return;
+  }
+
+  if (current.provider === "kiro" && incoming.provider === "kiro") {
+    current.authMethod = incoming.authMethod;
+    current.region = incoming.region;
+    if (incoming.oidcRegion !== undefined) current.oidcRegion = incoming.oidcRegion;
+    if (incoming.clientId !== undefined) current.clientId = incoming.clientId;
+    if (incoming.clientSecret !== undefined) {
+      current.clientSecret = incoming.clientSecret;
+    }
+    if (incoming.profileArn !== undefined) current.profileArn = incoming.profileArn;
+    if (incoming.startUrl !== undefined) current.startUrl = incoming.startUrl;
+    if (incoming.tokenEndpoint !== undefined) {
+      current.tokenEndpoint = incoming.tokenEndpoint;
+    }
+    if (incoming.credentialSource !== undefined) {
+      current.credentialSource = incoming.credentialSource;
+    }
+    if (incoming.externalSyncAt !== undefined) {
+      current.externalSyncAt = incoming.externalSyncAt;
+    }
+    if (incoming.usedCount !== undefined) current.usedCount = incoming.usedCount;
+    if (incoming.limitCount !== undefined) current.limitCount = incoming.limitCount;
+    if (incoming.usageObservedAt !== undefined) {
+      current.usageObservedAt = incoming.usageObservedAt;
+    }
   }
 }
 
@@ -219,17 +469,24 @@ function mergeOAuthAccount(
 // account-management surface in one module, matching the source managers.
 export class AccountManager {
   private readonly storagePath: string | undefined;
-  private readonly refreshByProvider: Partial<Record<ProviderKind, RefreshFn>>;
+  private readonly refreshByProvider: RefreshDrivers;
   private storage: AccountStorage | null = null;
   private loadPromise: Promise<void> | null = null;
   private readonly freshInFlight = new Map<string, Promise<Tokens>>();
 
-  constructor(
-    storagePath?: string,
-    refreshByProvider: Partial<Record<ProviderKind, RefreshFn>> = {},
-  ) {
+  constructor(storagePath?: string, refresh: RefreshInputs = {}) {
     this.storagePath = storagePath;
-    this.refreshByProvider = refreshByProvider;
+    const drivers: RefreshDrivers = {};
+    if (refresh.xai !== undefined) {
+      drivers.xai = toRefreshDriver<"xai">(refresh.xai);
+    }
+    if (refresh.codex !== undefined) {
+      drivers.codex = toRefreshDriver<"codex">(refresh.codex);
+    }
+    if (refresh.kiro !== undefined) {
+      drivers.kiro = toRefreshDriver<"kiro">(refresh.kiro);
+    }
+    this.refreshByProvider = drivers;
   }
 
   async load(): Promise<void> {
@@ -241,7 +498,9 @@ export class AccountManager {
 
     const pending = (async () => {
       await migrateAccountsIfNeeded({ unifiedPath: this.storagePath });
+      // Storage-version upgrades run under the cross-process lock before adoption.
       const storage = await loadAccounts(this.storagePath);
+      sortAccountsByPriority(storage);
       this.adoptStorage(storage);
       logger.debug(
         `AccountManager loaded ${storage.accounts.length} account(s)`,
@@ -262,9 +521,11 @@ export class AccountManager {
   }
 
   list(provider: ProviderKind): AccountMetadata[] {
-    return this.storage?.accounts.filter(
-      (account) => account.provider === provider,
-    ) ?? [];
+    return (
+      this.storage?.accounts.filter(
+        (account) => account.provider === provider,
+      ) ?? []
+    );
   }
 
   listAll(): AccountMetadata[] {
@@ -284,17 +545,18 @@ export class AccountManager {
   selectAccount(
     provider: ProviderKind,
     attempted: Set<string>,
+    policy: AccountSelectionStrategy = "sticky",
   ): AccountMetadata | null {
     const storage = this.storage;
     if (!storage) return null;
     const now = Date.now();
     const eligible = (account: AccountMetadata): boolean =>
       account.provider === provider &&
-      isSelectable(account, now) &&
+      isRotationReady(account, now) &&
       !attempted.has(account.accountId);
 
     const stickyId = storage.sticky[provider];
-    if (stickyId !== undefined) {
+    if (policy === "sticky" && stickyId !== undefined) {
       const current = storage.accounts.find(
         (account) =>
           matchesIdentity(account, provider, stickyId) && eligible(account),
@@ -302,13 +564,56 @@ export class AccountManager {
       if (current) return current;
     }
 
-    const next = storage.accounts.find(eligible);
+    const next = this.pickByPolicy(storage, provider, eligible, policy);
     if (!next) return null;
     storage.sticky[provider] = next.accountId;
     logger.debug(
-      `selectAccount switched ${provider} sticky to ${next.accountId}`,
+      `selectAccount switched ${provider} sticky to ${next.accountId} (${policy})`,
     );
     return next;
+  }
+
+  private pickByPolicy(
+    storage: AccountStorage,
+    provider: ProviderKind,
+    eligible: (account: AccountMetadata) => boolean,
+    policy: AccountSelectionStrategy,
+  ): AccountMetadata | null {
+    const pool = storage.accounts.filter(eligible);
+    if (pool.length === 0) return null;
+
+    if (policy === "lowest-usage") {
+      return pool.reduce((best, candidate) => {
+        const bestUsed = best.provider === "kiro" ? best.usedCount ?? 0 : 0;
+        const candUsed =
+          candidate.provider === "kiro" ? candidate.usedCount ?? 0 : 0;
+        if (candUsed !== bestUsed) return candUsed < bestUsed ? candidate : best;
+        if (candidate.lastUsed !== best.lastUsed) {
+          return candidate.lastUsed < best.lastUsed ? candidate : best;
+        }
+        return best;
+      });
+    }
+
+    if (policy === "round-robin") {
+      const stickyId = storage.sticky[provider];
+      if (stickyId !== undefined) {
+        const cursor = storage.accounts.findIndex((account) =>
+          matchesIdentity(account, provider, stickyId),
+        );
+        if (cursor !== -1) {
+          const ordered = [
+            ...storage.accounts.slice(cursor + 1),
+            ...storage.accounts.slice(0, cursor + 1),
+          ];
+          const rotated = ordered.find(eligible);
+          if (rotated) return rotated;
+        }
+      }
+      return pool[0] ?? null;
+    }
+
+    return pool[0] ?? null;
   }
 
   async add(account: AccountMetadata): Promise<void> {
@@ -322,9 +627,13 @@ export class AccountManager {
           `account ${identityKey(account.provider, account.accountId)} already exists`,
         );
       }
-      if (storage.accounts.length >= MAX_ACCOUNTS) {
+      if (
+        storage.accounts.filter(
+          (candidate) => candidate.provider === account.provider,
+        ).length >= MAX_ACCOUNTS_PER_PROVIDER
+      ) {
         throw new Error(
-          `cannot add account: pool is at the maximum of ${MAX_ACCOUNTS} accounts`,
+          `cannot add account: ${account.provider} pool is at the maximum of ${MAX_ACCOUNTS_PER_PROVIDER} accounts`,
         );
       }
       storage.accounts.push(account);
@@ -364,9 +673,12 @@ export class AccountManager {
         mergeOAuthAccount(current, account);
         return;
       }
-      if (storage.accounts.length >= MAX_ACCOUNTS) {
+      if (
+        storage.accounts.filter((candidate) => candidate.provider === provider)
+          .length >= MAX_ACCOUNTS_PER_PROVIDER
+      ) {
         throw new Error(
-          `cannot add account: pool is at the maximum of ${MAX_ACCOUNTS} accounts`,
+          `cannot add account: ${provider} pool is at the maximum of ${MAX_ACCOUNTS_PER_PROVIDER} accounts`,
         );
       }
       storage.accounts.push(account);
@@ -434,27 +746,8 @@ export class AccountManager {
 
       account.quotaResetAt = resetAt;
       account.lastSwitchReason = "quota-exhausted";
-      const providerAccounts = storage.accounts.filter(
-        (candidate) => candidate.provider === provider,
-      );
-      const minimumPriority = Math.min(
-        ...providerAccounts.map((candidate) => candidate.priority),
-      );
-      account.priority = minimumPriority - 1;
-      sortAccountsByPriority(storage);
-
-      if (
-        storage.sticky[provider] === id &&
-        !isSelectable(account, Date.now())
-      ) {
-        const replacement = storage.accounts.find(
-          (candidate) =>
-            candidate.provider === provider &&
-            isSelectable(candidate, Date.now()),
-        );
-        if (replacement) storage.sticky[provider] = replacement.accountId;
-        else clearSticky(storage, provider);
-      }
+      demoteAccountInProvider(storage, provider, account);
+      switchStickyIfUnselectable(storage, provider, id);
     });
   }
 
@@ -462,8 +755,19 @@ export class AccountManager {
     provider: ProviderKind,
     id: string,
   ): Promise<void> {
-    await this.mutateNonToken(provider, id, (account) => {
+    await this.mutateStorage((storage) => {
+      const account = storage.accounts.find((candidate) =>
+        matchesIdentity(candidate, provider, id),
+      );
+      if (!account) {
+        logger.warn(
+          `markEntitlementBlocked: account ${identityKey(provider, id)} not found; skipping`,
+        );
+        return;
+      }
       account.entitlementBlocked = true;
+      demoteAccountInProvider(storage, provider, account);
+      switchStickyIfUnselectable(storage, provider, id);
     });
   }
 
@@ -472,9 +776,20 @@ export class AccountManager {
     id: string,
   ): Promise<void> {
     const now = Date.now();
-    await this.mutateNonToken(provider, id, (account) => {
+    await this.mutateStorage((storage) => {
+      const account = storage.accounts.find((candidate) =>
+        matchesIdentity(candidate, provider, id),
+      );
+      if (!account) {
+        logger.warn(
+          `markDeadCandidate: account ${identityKey(provider, id)} not found; skipping`,
+        );
+        return;
+      }
       account.subscriptionStatus = "dead";
       account.subscriptionCheckedAt = now;
+      demoteAccountInProvider(storage, provider, account);
+      switchStickyIfUnselectable(storage, provider, id, now);
     });
   }
 
@@ -484,16 +799,32 @@ export class AccountManager {
     reason: CooldownReason,
     until: number,
   ): Promise<void> {
-    await this.mutateNonToken(provider, id, (account) => {
+    await this.mutateStorage((storage) => {
+      const account = storage.accounts.find((candidate) =>
+        matchesIdentity(candidate, provider, id),
+      );
+      if (!account) {
+        logger.warn(
+          `recordCooldown: account ${identityKey(provider, id)} not found; skipping`,
+        );
+        return;
+      }
       account.coolingDownUntil = until;
       account.cooldownReason = reason;
+      demoteAccountInProvider(storage, provider, account);
+      switchStickyIfUnselectable(storage, provider, id);
     });
   }
 
   async touchLastUsed(provider: ProviderKind, id: string): Promise<void> {
     const now = Date.now();
-    await this.mutateNonToken(provider, id, (account) => {
+    await this.mutateStorage((storage) => {
+      const account = storage.accounts.find((candidate) =>
+        matchesIdentity(candidate, provider, id),
+      );
+      if (!account) return;
       account.lastUsed = now;
+      storage.sticky[provider] = id;
     });
   }
 
@@ -600,16 +931,41 @@ export class AccountManager {
     });
   }
 
+  async recordKiroUsage(
+    provider: ProviderKind,
+    id: string,
+    snap: KiroUsageSnapshot,
+  ): Promise<void> {
+    if (provider !== "kiro") return;
+    const observedAt = snap.observedAt ?? Date.now();
+    await this.mutateNonToken(provider, id, (account) => {
+      if (account.provider !== "kiro") return;
+      if (snap.usedCount !== undefined) account.usedCount = snap.usedCount;
+      if (snap.limitCount !== undefined) account.limitCount = snap.limitCount;
+      if (snap.email !== undefined) account.email = snap.email;
+      account.usageObservedAt = observedAt;
+    });
+  }
+
   async switchTo(provider: ProviderKind, id: string): Promise<void> {
     await this.mutateStorage((storage) => {
-      const exists = storage.accounts.some((account) =>
-        matchesIdentity(account, provider, id),
+      const account = storage.accounts.find((candidate) =>
+        matchesIdentity(candidate, provider, id),
       );
-      if (!exists) {
+      if (!account) {
         throw new Error(
           `cannot switch: unknown account ${identityKey(provider, id)}`,
         );
       }
+      account.enabled = true;
+      if (account.subscriptionStatus !== "dead") {
+        account.subscriptionStatus = "active";
+      }
+      account.entitlementBlocked = false;
+      account.coolingDownUntil = undefined;
+      account.cooldownReason = undefined;
+      account.quotaResetAt = undefined;
+      account.lastSwitchReason = "manual";
       storage.sticky[provider] = id;
     });
   }
@@ -757,6 +1113,19 @@ export class AccountManager {
     );
   }
 
+  deadAccounts(provider: ProviderKind): AccountMetadata[] {
+    return this.list(provider).filter(
+      (account) => account.subscriptionStatus === "dead",
+    );
+  }
+
+  async cleanDeadAccounts(
+    provider: ProviderKind,
+  ): Promise<{ removed: string[] }> {
+    const ids = this.deadAccounts(provider).map((account) => account.accountId);
+    return this.pruneAccounts(provider, ids);
+  }
+
   async pruneAccounts(
     provider: ProviderKind,
     ids: string[],
@@ -794,7 +1163,8 @@ export class AccountManager {
       list: () => this.list(provider),
       get: (id) => this.get(provider, id),
       sticky: () => this.sticky(provider),
-      selectAccount: (attempted) => this.selectAccount(provider, attempted),
+      selectAccount: (attempted, policy) =>
+        this.selectAccount(provider, attempted, policy),
       add: async (account) => {
         if (account.provider !== provider) {
           throw new Error(
@@ -821,6 +1191,7 @@ export class AccountManager {
         this.recordBillingQuota(provider, id, snap),
       recordPlan: (id, snap) => this.recordPlan(provider, id, snap),
       recordUsage: (id, snap) => this.recordUsage(provider, id, snap),
+      recordKiroUsage: (id, snap) => this.recordKiroUsage(provider, id, snap),
       switchTo: (id) => this.switchTo(provider, id),
       setEnabled: (id, enabled) => this.setEnabled(provider, id, enabled),
       setLabel: (id, label) => this.setLabel(provider, id, label),
@@ -835,6 +1206,8 @@ export class AccountManager {
       setFlaggedForRemoval: (id, flagged) =>
         this.setFlaggedForRemoval(provider, id, flagged),
       prunableAccounts: () => this.prunableAccounts(provider),
+      deadAccounts: () => this.deadAccounts(provider),
+      cleanDeadAccounts: () => this.cleanDeadAccounts(provider),
       pruneAccounts: (ids) => this.pruneAccounts(provider, ids),
     };
   }
@@ -910,13 +1283,36 @@ export class AccountManager {
         return { storage, tokens: diskTokens };
       }
 
-      const refresh = this.refreshByProvider[provider];
-      if (!refresh) {
+      let refreshed: Tokens;
+      if (provider === "xai" && account.provider === "xai") {
+        const driver = this.refreshByProvider.xai;
+        if (!driver) {
+          throw new Error(
+            "ensureFreshToken: no refresh handler configured for provider xai",
+          );
+        }
+        refreshed = await driver.refresh(account, { force });
+      } else if (provider === "codex" && account.provider === "codex") {
+        const driver = this.refreshByProvider.codex;
+        if (!driver) {
+          throw new Error(
+            "ensureFreshToken: no refresh handler configured for provider codex",
+          );
+        }
+        refreshed = await driver.refresh(account, { force });
+      } else if (provider === "kiro" && account.provider === "kiro") {
+        const driver = this.refreshByProvider.kiro;
+        if (!driver) {
+          throw new Error(
+            "ensureFreshToken: no refresh handler configured for provider kiro",
+          );
+        }
+        refreshed = await driver.refresh(account, { force });
+      } else {
         throw new Error(
           `ensureFreshToken: no refresh handler configured for provider ${provider}`,
         );
       }
-      const refreshed = await refresh(account.refreshToken);
       const tokens: Tokens = {
         accessToken: refreshed.accessToken,
         refreshToken: refreshed.refreshToken,
@@ -944,7 +1340,10 @@ let singletonPath: string | undefined;
 
 export function getAccountManager(storagePath?: string): AccountManager {
   if (!singleton) {
-    singleton = new AccountManager(storagePath);
+    singleton = new AccountManager(
+      storagePath,
+      createDefaultRefreshHandlers(),
+    );
     singletonPath = storagePath ?? defaultStoragePath();
     return singleton;
   }

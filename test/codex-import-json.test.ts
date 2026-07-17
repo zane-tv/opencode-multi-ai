@@ -81,7 +81,7 @@ describe("importAccountsFromJsonText", () => {
 
   beforeEach(async () => {
     storePath = tmpStorePath();
-    const empty: AccountStorage = { version: 2, accounts: [], sticky: {} };
+    const empty: AccountStorage = { version: 3, accounts: [], sticky: {} };
     await saveAccounts(empty, storePath);
     manager = new AccountManager(storePath);
     await manager.load();

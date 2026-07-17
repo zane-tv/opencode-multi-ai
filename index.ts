@@ -12,6 +12,8 @@
  * Per-provider modules remain the canonical PluginModules:
  *   lib/plugin/xai.ts   → id: xai-multi
  *   lib/plugin/codex.ts → id: codex-multi
+ *   lib/plugin/kiro.ts  → id: kiro-multi
  */
 export { default as xai } from "./lib/plugin/xai.js";
 export { default as codex } from "./lib/plugin/codex.js";
+export { default as kiro } from "./lib/plugin/kiro.js";

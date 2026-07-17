@@ -25,6 +25,9 @@ const PROVIDER_CASES = [
   { provider: "codex", source: "opencode-multi-codex" },
 ] as const;
 
+type TestedProviderKind = Exclude<ProviderKind, "kiro">;
+type TestedAccount = Extract<AccountMetadata, { provider: TestedProviderKind }>;
+
 type CommonAccountOverrides = Partial<
   Omit<AccountMetadata, "provider" | "accountId">
 >;
@@ -37,10 +40,10 @@ function tmpStorePath(provider: ProviderKind): string {
 }
 
 function makeAccount(
-  provider: ProviderKind,
+  provider: TestedProviderKind,
   id: string,
   overrides: CommonAccountOverrides = {},
-): AccountMetadata {
+): TestedAccount {
   const common = {
     accountId: id,
     tags: [],
@@ -61,7 +64,7 @@ function makeAccount(
 }
 
 function stickyFor(
-  provider: ProviderKind,
+  provider: TestedProviderKind,
   accountId?: string,
 ): AccountStorage["sticky"] {
   if (accountId === undefined) return {};
@@ -69,7 +72,7 @@ function stickyFor(
 }
 
 function handlersFor(
-  provider: ProviderKind,
+  provider: TestedProviderKind,
   refresh: RefreshFn,
 ): Partial<Record<ProviderKind, RefreshFn>> {
   return provider === "xai" ? { xai: refresh } : { codex: refresh };
@@ -80,7 +83,7 @@ async function writeStore(
   accounts: AccountMetadata[],
   sticky: AccountStorage["sticky"] = {},
 ): Promise<void> {
-  await saveAccounts({ version: 2, accounts, sticky }, storePath);
+  await saveAccounts({ version: 3, accounts, sticky }, storePath);
 }
 
 async function cleanStore(storePath: string): Promise<void> {
@@ -814,5 +817,37 @@ describe("getAccountManager singleton", () => {
     expect(() => getAccountManager("/some/other/path.json")).toThrow(
       /different storagePath/,
     );
+  });
+
+  it("ships default refresh handlers so force-refresh works for plugins", async () => {
+    const storePath = tmpStorePath("xai");
+    paths.push(storePath);
+    await writeStore(storePath, [
+      makeAccount("xai", "a0", {
+        accessToken: "at-old",
+        refreshToken: "rt-old",
+        expiresAt: Date.now() - 1_000,
+      }),
+    ]);
+
+    // Spy provider OAuth without needing a live network refresh.
+    const oauth = await import("../lib/providers/xai/auth/oauth.js");
+    const spy = vi
+      .spyOn(oauth, "refreshTokens")
+      .mockResolvedValueOnce({
+        accessToken: "at-new",
+        refreshToken: "rt-rotated",
+        expiresAt: Date.now() + HOUR,
+      });
+
+    try {
+      const manager = getAccountManager(storePath);
+      await manager.load();
+      const tokens = await manager.ensureFreshToken("xai", "a0", true);
+      expect(spy).toHaveBeenCalledWith("rt-old");
+      expect(tokens.refreshToken).toBe("rt-rotated");
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

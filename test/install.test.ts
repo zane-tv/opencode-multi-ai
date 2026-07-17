@@ -17,6 +17,10 @@ import {
   PROVIDER_ID as CODEX_PROVIDER_ID,
 } from "../lib/providers/codex/constants.js";
 import {
+  KIRO_BASE_URL,
+  PROVIDER_ID as KIRO_PROVIDER_ID,
+} from "../lib/providers/kiro/constants.js";
+import {
   PROVIDER_ID as XAI_PROVIDER_ID,
   XAI_API_BASE,
 } from "../lib/providers/xai/constants.js";
@@ -46,11 +50,11 @@ function providerMap(
 }
 
 describe("installProvider — creates from absent", () => {
-  it("creates a config file with schema + BOTH providers", async () => {
+  it("creates a config file with schema + all three providers", async () => {
     const result = await installProvider(configPath);
 
     expect(result.created).toBe(true);
-    expect(result.providers).toHaveLength(2);
+    expect(result.providers).toHaveLength(3);
     expect(result.providers.every((p) => p.added)).toBe(true);
     expect(result.pluginEntriesAdded).toEqual([]);
 
@@ -60,6 +64,7 @@ describe("installProvider — creates from absent", () => {
     const providers = providerMap(config);
     expect(XAI_PROVIDER_ID).toBe("xai-multi");
     expect(CODEX_PROVIDER_ID).toBe("codex-multi");
+    expect(KIRO_PROVIDER_ID).toBe("kiro-multi");
 
     const xai = providers[XAI_PROVIDER_ID];
     expect(xai.npm).toBe("@ai-sdk/xai");
@@ -79,6 +84,13 @@ describe("installProvider — creates from absent", () => {
     const codexModels = codex.models as Record<string, { name?: string }>;
     expect(codexModels["gpt-5-codex"]?.name).toBe("GPT-5 Codex");
     expect(codexModels["gpt-5.5"]?.name).toBe("GPT-5.5");
+
+    const kiro = providers[KIRO_PROVIDER_ID];
+    expect(kiro.npm).toBe("@ai-sdk/openai-compatible");
+    expect(kiro.name).toBe("Kiro Multi-Account");
+    const kiroOpts = kiro.options as Record<string, unknown>;
+    expect(kiroOpts.baseURL).toBe(KIRO_BASE_URL);
+    expect(kiroOpts.accountSelectionStrategy).toBe("sticky");
   });
 
   it("never writes built-in xai or openai provider ids as multi entries", async () => {
@@ -89,6 +101,7 @@ describe("installProvider — creates from absent", () => {
     }
     expect(providers["xai-multi"]).toBeTruthy();
     expect(providers["codex-multi"]).toBeTruthy();
+    expect(providers["kiro-multi"]).toBeTruthy();
   });
 
   it("creates missing parent directories", async () => {
@@ -173,7 +186,10 @@ describe("installProvider — merges without clobbering", () => {
     );
 
     const result = await installProvider(configPath);
-    expect(result.providers.every((p) => p.added === false)).toBe(true);
+    const byId = Object.fromEntries(result.providers.map((p) => [p.id, p]));
+    expect(byId[XAI_PROVIDER_ID]?.added).toBe(false);
+    expect(byId[CODEX_PROVIDER_ID]?.added).toBe(false);
+    expect(byId[KIRO_PROVIDER_ID]?.added).toBe(true);
     expect(result.providers.some((p) => p.updated)).toBe(true);
 
     const providers = providerMap(await readJson(configPath));
@@ -200,6 +216,7 @@ describe("installProvider — merges without clobbering", () => {
     });
     expect(codexModels["gpt-custom"]).toEqual({ name: "Custom Codex" });
     expect(codexModels["gpt-5.1-codex"]?.name).toBe("GPT-5.1 Codex");
+    expect(providers[KIRO_PROVIDER_ID]).toBeTruthy();
   });
 
   it("fills in only missing fields on partial provider entries", async () => {
@@ -209,6 +226,7 @@ describe("installProvider — merges without clobbering", () => {
         provider: {
           [XAI_PROVIDER_ID]: { name: "Kept XAI" },
           [CODEX_PROVIDER_ID]: { name: "Kept Codex" },
+          [KIRO_PROVIDER_ID]: { name: "Kept Kiro" },
         },
       }),
       "utf8",
@@ -280,7 +298,19 @@ describe("installProvider — plugin entries + legacy replace", () => {
     });
 
     expect(result.legacyPluginsRemoved).toEqual(
-      expect.arrayContaining([...LEGACY_PLUGIN_PACKAGES]),
+      expect.arrayContaining([
+        "opencode-multi-xai",
+        "opencode-multi-codex",
+        "/path/to/opencode-multi-xai",
+      ]),
+    );
+    expect(LEGACY_PLUGIN_PACKAGES).toEqual(
+      expect.arrayContaining([
+        "opencode-multi-xai",
+        "opencode-multi-codex",
+        "opencode-kiro-auth",
+        "@zhafron/opencode-kiro-auth",
+      ]),
     );
     const plugin = (await readJson(configPath)).plugin as unknown[];
     expect(plugin).toContain("some-other-plugin");

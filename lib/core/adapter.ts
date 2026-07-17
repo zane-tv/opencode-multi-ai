@@ -10,11 +10,12 @@
  * is interface + shared Classification shape only.
  */
 
-/** Discriminator for account storage / manager identity. */
-export type ProviderKind = "xai" | "codex";
+import type { ProviderKind } from "./schemas.js";
+
+export type { ProviderKind } from "./schemas.js";
 
 /** OpenCode provider id registered by each plugin entry. */
-export type ProviderId = "xai-multi" | "codex-multi";
+export type ProviderId = "xai-multi" | "codex-multi" | "kiro-multi";
 
 /**
  * Headers init without relying on a DOM lib entry.
@@ -90,6 +91,74 @@ export interface ResolveModelsOptions {
   allowNetwork?: boolean;
   cachePath?: string;
 }
+
+/** Provider metadata shared by HTTP and SDK-backed transports. */
+export interface ProviderDescriptor {
+  readonly id: ProviderId;
+  readonly provider: ProviderKind;
+  readonly displayName: string;
+  readonly npmPackage: string;
+  readonly baseURL: string;
+  readonly dummyApiKey: string;
+  resolveModels(opts: ResolveModelsOptions): Promise<Record<string, unknown>>;
+  providerDefaultOptions(): Record<string, unknown>;
+  listSubtitle(account: Record<string, unknown>, now: number): string;
+  detailLines(account: Record<string, unknown>, now: number): string[];
+  probeQuota?(
+    accessToken: string,
+    account: { accountId: string; organizationId?: string },
+  ): Promise<Record<string, unknown>>;
+  hostAuth?: {
+    bootstrap(providerId: string): boolean;
+    ensureAfterLogin(providerId: string, accountId?: string): void;
+  };
+}
+
+/** HTTP-only request surface used by createRotationFetch. */
+export interface HttpTransportAdapter {
+  resolveUrl(input: string | URL): string;
+  buildHeaders(ctx: BuildHeadersContext): Headers;
+  transformBody(
+    init: RequestInit | undefined,
+    ctx: TransformBodyContext,
+  ): RequestInit | undefined;
+  classifyResponse(
+    res: Response,
+    bodyText: string,
+  ): Classification | Promise<Classification>;
+  classifyThrownError(err: unknown): Classification;
+  recordSuccess(ctx: RecordSuccessContext): Promise<void>;
+  probeQuota?(
+    accessToken: string,
+    account: { accountId: string; organizationId?: string },
+  ): Promise<Record<string, unknown>>;
+}
+
+export type FetchLike = (
+  input: Parameters<typeof fetch>[0],
+  init?: Parameters<typeof fetch>[1],
+) => Promise<Response>;
+
+/** Deliberately structural to avoid a runtime dependency on rotation-fetch. */
+export interface ProviderFetchContext {
+  readonly descriptor: ProviderDescriptor;
+  readonly manager: unknown;
+}
+
+export type ProviderTransport =
+  | ({ readonly kind: "http" } & HttpTransportAdapter)
+  | {
+      readonly kind: "custom";
+      createFetch(ctx: ProviderFetchContext): FetchLike;
+    };
+
+/** Canonical post-Wave-5 provider shape. */
+export type TransportProviderAdapter = ProviderDescriptor & {
+  readonly transport: ProviderTransport;
+};
+
+export type HttpTransportProviderAdapter = TransportProviderAdapter &
+  Partial<HttpTransportAdapter>;
 
 /**
  * Total provider adapter. All methods required unless marked optional.
@@ -171,26 +240,58 @@ export interface ProviderAdapter {
   };
 }
 
-/** Runtime type guard for objects that claim to be a ProviderAdapter. */
-export function isProviderAdapter(x: unknown): x is ProviderAdapter {
+export type AnyProviderAdapter = ProviderAdapter | TransportProviderAdapter;
+
+export function assertNever(value: never): never {
+  throw new Error(`unhandled provider transport: ${String(value)}`);
+}
+
+function isDescriptor(value: Record<string, unknown>): boolean {
+  const provider = value.provider;
+  const id = value.id;
+  return (
+    (provider === "xai" && id === "xai-multi") ||
+    (provider === "codex" && id === "codex-multi") ||
+    (provider === "kiro" && id === "kiro-multi")
+  ) &&
+    typeof value.displayName === "string" &&
+    typeof value.resolveModels === "function" &&
+    typeof value.providerDefaultOptions === "function" &&
+    typeof value.npmPackage === "string" &&
+    typeof value.baseURL === "string" &&
+    typeof value.dummyApiKey === "string" &&
+    typeof value.listSubtitle === "function" &&
+    typeof value.detailLines === "function";
+}
+
+export function isProviderAdapter(x: unknown): x is AnyProviderAdapter {
   if (x === null || typeof x !== "object") return false;
   const a = x as Record<string, unknown>;
-  return (
-    (a.id === "xai-multi" || a.id === "codex-multi") &&
-    (a.provider === "xai" || a.provider === "codex") &&
-    typeof a.displayName === "string" &&
-    typeof a.resolveUrl === "function" &&
-    typeof a.buildHeaders === "function" &&
-    typeof a.transformBody === "function" &&
-    typeof a.classifyResponse === "function" &&
-    typeof a.classifyThrownError === "function" &&
-    typeof a.recordSuccess === "function" &&
-    typeof a.resolveModels === "function" &&
-    typeof a.providerDefaultOptions === "function" &&
-    typeof a.npmPackage === "string" &&
-    typeof a.baseURL === "string" &&
-    typeof a.dummyApiKey === "string" &&
-    typeof a.listSubtitle === "function" &&
-    typeof a.detailLines === "function"
-  );
+  if (!isDescriptor(a)) return false;
+  if (a.transport === undefined) {
+    return (
+      typeof a.resolveUrl === "function" &&
+      typeof a.buildHeaders === "function" &&
+      typeof a.transformBody === "function" &&
+      typeof a.classifyResponse === "function" &&
+      typeof a.classifyThrownError === "function" &&
+      typeof a.recordSuccess === "function"
+    );
+  }
+  if (a.transport === null || typeof a.transport !== "object") return false;
+  const transport = a.transport as Record<string, unknown>;
+  if (transport.kind === "custom") {
+    return typeof transport.createFetch === "function";
+  }
+  if (transport.kind === "http") {
+    return (
+      typeof transport.resolveUrl === "function" &&
+      typeof transport.buildHeaders === "function" &&
+      typeof transport.transformBody === "function" &&
+      typeof transport.classifyResponse === "function" &&
+      typeof transport.classifyThrownError === "function" &&
+      typeof transport.recordSuccess === "function"
+    );
+  }
+  return false;
 }
