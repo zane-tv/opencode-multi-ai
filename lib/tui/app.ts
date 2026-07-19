@@ -31,6 +31,8 @@ import {
 import {
   AccountManager,
   createDefaultRefreshHandlers,
+  effectiveXaiRemainingPercent,
+  isRotationReady,
   type ProviderAccountView,
 } from "../core/accounts.js";
 import { isInvalidGrantError } from "../core/rotation-fetch.js";
@@ -48,6 +50,7 @@ import {
 } from "../core/tui-status.js";
 import type { AnyProviderAdapter } from "../core/adapter.js";
 import {
+  formatBillingReset,
   formatDateTime,
   formatUntil,
 } from "../core/format-time.js";
@@ -58,10 +61,22 @@ import {
   t as tr,
   type Locale,
 } from "../core/i18n.js";
+import {
+  cycleSelectionStrategy,
+  getSelectionStrategy,
+  selectionStrategyLabel,
+} from "../core/selection-strategy.js";
+import {
+  codexFastModeLabel,
+  getCodexFastMode,
+  toggleCodexFastMode,
+} from "../core/codex-fast-mode.js";
 import { xaiAdapter } from "../providers/xai/adapter.js";
 import {
   deriveRemainingFromPlanUsage,
   formatPlanLimit,
+  resolveXaiCreditResetsAtMs,
+  resolveXaiPlanResetsAtMs,
   resolveXaiRemainingPercent,
 } from "../providers/xai/request/plan.js";
 import { codexAdapter } from "../providers/codex/adapter.js";
@@ -120,6 +135,8 @@ const T = {
   brandOp: "#7dd3fc",
   brandAi: "#a78bfa",
   brandSep: "#6b7280",
+  brandMark: "#e2e8f0",
+  brandTag: "#64748b",
 
   xai: "#38bdf8",
   xaiBright: "#7dd3fc",
@@ -215,6 +232,8 @@ type KiroAddWizard =
   | { method: "json" }
   | { method: "export" }
   | { method: "cli" };
+
+type CodexAddWizard = { method: "json" };
 
 type EditContext = {
   provider: TuiTab;
@@ -315,7 +334,6 @@ function providerHue(tab: TuiTab): {
 }
 
 function stickyIndex(view: ProviderAccountView): number {
-  // list() already puts the resolved active account first
   const sticky = view.sticky();
   if (!sticky) return 0;
   const i = view.list().findIndex((a) => a.accountId === sticky);
@@ -338,6 +356,10 @@ function accountStatus(account: AccountMetadata, now: number): StatusKind {
     account.coolingDownUntil > now
   ) {
     return "cooling";
+  }
+  // xAI: closed Build period or zero remaining → show quota (not false READY)
+  if (account.provider === "xai" && !isRotationReady(account, now)) {
+    return "quota";
   }
   return "ready";
 }
@@ -403,7 +425,10 @@ function meterBarChunks(
 
 function remainingPercent(account: AccountMetadata): number | undefined {
   if (account.provider === "xai") {
-    return resolveXaiRemainingPercent(account as XaiAccountMetadata);
+    return effectiveXaiRemainingPercent(
+      account as XaiAccountMetadata,
+      Date.now(),
+    );
   }
   if (account.provider === "kiro") {
     const used = account.usedCount;
@@ -450,7 +475,37 @@ function joinChunks(chunks: TextChunk[]): StyledText {
 }
 
 function styledBrand(): StyledText {
-  return t`${bold(fg(T.brandOp)("op"))}${fg(T.brandSep)("-")}${bold(fg(T.brandAi)("ai"))}${fg(T.textDim)(" · ")}${fg(T.textMuted)(tr("brand").trim() || "multi-account pool")}`;
+  const chunks: TextChunk[] = [];
+  chunks.push(bold(fg(T.codexBright)("◈")));
+  chunks.push(fg(T.brandSep)("·"));
+  chunks.push(bold(fg(T.xaiBright)("◈")));
+  chunks.push(fg(T.brandSep)("·"));
+  chunks.push(bold(fg(T.kiroBright)("◈")));
+  chunks.push(fg(T.brandSep)("⟩"));
+  chunks.push(bold(fg(T.brandMark)("◆")));
+  chunks.push(fg(T.textDim)("  "));
+  chunks.push(bold(fg(T.brandOp)("op")));
+  chunks.push(fg(T.brandSep)("-"));
+  chunks.push(bold(fg(T.brandAi)("ai")));
+  chunks.push(fg(T.textDim)("  ·  "));
+  chunks.push(
+    fg(T.brandTag)(
+      tr("brand").trim() || "OpenCode Multi AI · SuperGrok + Codex + Kiro",
+    ),
+  );
+  chunks.push(fg(T.textDim)("  ·  "));
+  chunks.push(fg(T.key)("m"));
+  chunks.push(fg(T.textDim)(":"));
+  chunks.push(fg(T.cooling)(selectionStrategyLabel(getSelectionStrategy())));
+  chunks.push(fg(T.textDim)("  ·  "));
+  chunks.push(fg(T.key)("F"));
+  chunks.push(fg(T.textDim)(":"));
+  chunks.push(
+    fg(getCodexFastMode() ? T.ready : T.textDim)(
+      `codex ${codexFastModeLabel()}`,
+    ),
+  );
+  return joinChunks(chunks);
 }
 
 function styledTabBar(active: TuiTab): StyledText {
@@ -579,15 +634,19 @@ function styledHints(
 }
 
 function styledFooter(): StyledText {
-  // Footer from registry — only implemented bindings, no phantoms.
   const chunks: TextChunk[] = [];
-  const shown = TUI_BINDINGS.filter((b) => b.available);
+  const seenKeys = new Set<string>();
+  const shown = TUI_BINDINGS.filter((b) => {
+    if (!b.available) return false;
+    if (seenKeys.has(b.key)) return false;
+    seenKeys.add(b.key);
+    return true;
+  });
   for (let i = 0; i < shown.length; i++) {
     const b = shown[i]!;
     if (i > 0) chunks.push(fg(T.textDim)("  "));
     chunks.push(fg(T.key)(b.key));
     chunks.push(fg(T.textDim)(":"));
-    // Short token from label key (first word after key letter in catalog)
     const label = tr(b.labelKey).replace(/^\S+\s+/, "").trim() || b.labelKey;
     chunks.push(fg(T.textDim)(label.length > 14 ? label.slice(0, 14) : label));
   }
@@ -598,30 +657,51 @@ function styledHelp(activeTab: TuiTab, locale: Locale): StyledText {
   void locale;
   const hue = providerHue(activeTab);
   const chunks: TextChunk[] = [
+    bold(fg(T.codexBright)("◈")),
+    fg(T.brandSep)("·"),
+    bold(fg(T.xaiBright)("◈")),
+    fg(T.brandSep)("·"),
+    bold(fg(T.kiroBright)("◈")),
+    fg(T.brandSep)("⟩"),
+    bold(fg(T.brandMark)("◆")),
+    fg(T.textDim)("  "),
+    bold(fg(T.brandOp)("OpenCode Multi AI")),
+    fg(T.text)("\n"),
+    fg(T.textDim)("  One pool · three providers · s = ACTIVE + list #1"),
+    fg(T.text)("\n"),
+    fg(T.textDim)("─".repeat(40)),
+    fg(T.text)("\n"),
     bold(fg(hue.bright)(tr("how_to_add"))),
     fg(T.text)("\n"),
     fg(T.textDim)("─".repeat(40)),
     fg(T.text)("\n"),
   ];
   if (activeTab === "codex") {
-    chunks.push(bold(fg(hue.bright)("CLI JSON import")));
+    chunks.push(bold(fg(hue.bright)("OAuth JSON import")));
     chunks.push(fg(T.text)("\n"));
     chunks.push(
-      fg(T.textDim)(
-        "  op-codex import-json <file>  — OAuth JSON (CLI only)",
-      ),
+      fg(T.textDim)("  o  Paste OAuth JSON or auth.json path in TUI"),
     );
     chunks.push(fg(T.text)("\n"));
     chunks.push(
-      fg(T.textDim)("  op-codex import-json --text '{...}'"),
+      fg(T.textDim)("  op-codex import --file ~/.codex/auth.json"),
+    );
+    chunks.push(fg(T.text)("\n"));
+    chunks.push(
+      fg(T.textDim)("  op-codex import --json '{...}'"),
     );
     chunks.push(fg(T.text)("\n\n"));
   }
-  for (const b of TUI_BINDINGS) {
-    if (!b.available) continue;
-    chunks.push(fg(T.key)(b.key.padEnd(4)));
-    chunks.push(fg(T.value)(tr(b.labelKey)));
-    chunks.push(fg(T.text)("\n"));
+  {
+    const seenHelpKeys = new Set<string>();
+    for (const b of TUI_BINDINGS) {
+      if (!b.available) continue;
+      if (seenHelpKeys.has(b.key)) continue;
+      seenHelpKeys.add(b.key);
+      chunks.push(fg(T.key)(b.key.padEnd(4)));
+      chunks.push(fg(T.value)(tr(b.labelKey)));
+      chunks.push(fg(T.text)("\n"));
+    }
   }
   chunks.push(fg(T.text)("\n"));
   chunks.push(fg(T.textDim)(`locale: ${localeLabel(getLocale())}  (? closes)`));
@@ -942,7 +1022,7 @@ function labelValue(
   valueColor: string = T.value,
 ): TextChunk[] {
   return [
-    fg(T.label)(`${label.padEnd(12)} `),
+    fg(T.label)(`${label.padEnd(14)} `),
     fg(valueColor)(value),
     fg(T.text)("\n"),
   ];
@@ -988,7 +1068,11 @@ function styledDetail(
   chunks.push(
     ...labelValue(
       "role",
-      isSticky ? "★ ACTIVE (sticky — rotation drains this first)" : "standby",
+      isSticky
+        ? getSelectionStrategy() === "round-robin"
+          ? "★ ACTIVE · list #1 after s · RR rotates next"
+          : "★ ACTIVE · sticky (s promotes to list #1)"
+        : "standby · [ ] move · s activate",
       isSticky ? T.ready : T.textMuted,
     ),
   );
@@ -1035,6 +1119,53 @@ function styledDetail(
   if (account.provider === "xai") {
     const x = account as XaiAccountMetadata;
     if (x.planName) chunks.push(...labelValue("plan", x.planName, hue.bright));
+    {
+      const usedPct =
+        typeof x.billingMonthlyUsedPercent === "number" &&
+        Number.isFinite(x.billingMonthlyUsedPercent)
+          ? x.billingMonthlyUsedPercent
+          : undefined;
+      const remPct =
+        typeof x.billingRemainingPercent === "number" &&
+        Number.isFinite(x.billingRemainingPercent)
+          ? x.billingRemainingPercent
+          : undefined;
+      if (usedPct !== undefined || remPct !== undefined) {
+        const periodLabel =
+          x.billingPeriodType === "weekly"
+            ? "Weekly limit"
+            : x.billingPeriodType === "monthly"
+              ? "Monthly limit"
+              : "Credits";
+        const showUsed =
+          usedPct !== undefined
+            ? Math.floor(usedPct)
+            : Math.round(100 - (remPct ?? 0));
+        chunks.push(
+          ...labelValue(
+            periodLabel,
+            `${showUsed}%` +
+              (remPct !== undefined ? ` · ${Math.round(remPct)}% left` : ""),
+            meterColor(
+              remPct ??
+                (usedPct !== undefined ? 100 - usedPct : undefined),
+            ),
+          ),
+        );
+      }
+    }
+    const creditResetsAt = resolveXaiCreditResetsAtMs(x);
+    if (creditResetsAt !== undefined) {
+      chunks.push(
+        ...labelValue(
+          "Credits reset",
+          formatBillingReset(creditResetsAt, now, {
+            periodType: x.billingPeriodType,
+          }),
+          T.quota,
+        ),
+      );
+    }
     if (
       typeof x.planUsed === "number" &&
       typeof x.planMonthlyLimit === "number" &&
@@ -1060,15 +1191,13 @@ function styledDetail(
         ),
       );
     }
-    if (
-      typeof x.billingRemainingPercent === "number" &&
-      Number.isFinite(x.billingRemainingPercent)
-    ) {
+    const planResetsAt = resolveXaiPlanResetsAtMs(x);
+    if (planResetsAt !== undefined) {
       chunks.push(
         ...labelValue(
-          "grpc %",
-          `${Math.round(x.billingRemainingPercent)}% left`,
-          meterColor(x.billingRemainingPercent),
+          "Plan reset",
+          formatBillingReset(planResetsAt, now),
+          T.quota,
         ),
       );
     }
@@ -1265,6 +1394,7 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
   let editMode = false;
   let editContext: EditContext | null = null;
   let kiroWizard: KiroAddWizard | null = null;
+  let codexWizard: CodexAddWizard | null = null;
   let addAbort: AbortController | null = null;
   let focusPane: "accounts" | "actions" | "edit" = "accounts";
   let actionMenuLevel: ActionMenuLevel = createActionMenuLevel();
@@ -1293,6 +1423,11 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
     autoFocus: true,
     onDestroy: teardown,
   });
+  try {
+    renderer.setTerminalTitle("op-ai · OpenCode Multi AI");
+  } catch {
+    /* older OpenTUI hosts */
+  }
 
   const brandText = new TextRenderable(renderer, {
     id: "brand",
@@ -1509,19 +1644,37 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
     return selectedAccount()?.accountId;
   }
 
+  function orderedAccountsFor(
+    tab: TuiTab,
+    list: AccountMetadata[],
+  ): AccountMetadata[] {
+    const sticky = manager.providerView(tab).sticky();
+    if (sticky === undefined) return list;
+    return [
+      ...list.filter((a) => a.accountId === sticky),
+      ...list.filter((a) => a.accountId !== sticky),
+    ];
+  }
+
   function restoreSelectionById(tab: TuiTab, id: string | undefined): void {
-    const list = manager.providerView(tab).list();
+    const list = orderedAccountsFor(tab, manager.providerView(tab).list());
     if (!id || list.length === 0) {
       selection = setSelectedForTab(selection, tab, 0, list.length);
+      try {
+        accountSelect.setSelectedIndex(0);
+      } catch {
+        /* */
+      }
       return;
     }
     const idx = list.findIndex((a) => a.accountId === id);
-    selection = setSelectedForTab(
-      selection,
-      tab,
-      idx >= 0 ? idx : 0,
-      list.length,
-    );
+    const next = idx >= 0 ? idx : 0;
+    selection = setSelectedForTab(selection, tab, next, list.length);
+    try {
+      accountSelect.setSelectedIndex(next);
+    } catch {
+      /* */
+    }
   }
 
   function applyProviderChrome(tab: TuiTab): void {
@@ -1576,8 +1729,7 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
       detailText.content = styledHelp(activeTab, getLocale());
       return;
     }
-    const accounts = view().list();
-    const acc = accounts[selection[activeTab]!];
+    const acc = selectedAccount();
     detailText.content = styledDetail(
       acc,
       adapter(),
@@ -1593,7 +1745,7 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
     try {
       const now = Date.now();
       const v = view();
-      const accounts = v.list();
+      const accounts = orderedAccounts();
       selection = setSelectedForTab(
         selection,
         activeTab,
@@ -1661,6 +1813,7 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
     editMode = false;
     editContext = null;
     kiroWizard = null;
+    codexWizard = null;
     editInput.visible = false;
     editInput.value = "";
     editInput.blur();
@@ -1680,6 +1833,65 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
       if (editMode && editInput.visible) editInput.value = "";
     });
     setStatus({ text: status, tone: "info" });
+  }
+
+  function beginCodexJsonWizard(): void {
+    if (activeTab !== "codex" || busy || addAbort) return;
+    if (editMode) cancelEdit();
+    confirmation = clearConfirmation();
+    codexWizard = { method: "json" };
+    showWizardInput(
+      '{"accessToken":"…","refreshToken":"…"} or ~/.codex/auth.json',
+      "Paste Codex OAuth JSON or file path — Enter import · Esc cancel",
+    );
+  }
+
+  async function finishCodexJsonImport(): Promise<void> {
+    const value = editInput.value.trim();
+    if (!value) {
+      setStatus({ text: "JSON or file path is required", tone: "err" });
+      return;
+    }
+    cancelEdit();
+    busy = true;
+    try {
+      const {
+        importAccountsFromJsonFile,
+        importAccountsFromJsonText,
+      } = await import("../providers/codex/auth/import-json.js");
+      const view = manager.providerView("codex");
+      const looksLikePath =
+        !value.startsWith("{") &&
+        !value.startsWith("[") &&
+        (value.includes("/") ||
+          value.includes("\\") ||
+          value.endsWith(".json"));
+      const result = looksLikePath
+        ? await importAccountsFromJsonFile(view, value)
+        : await importAccountsFromJsonText(view, value);
+      const lastOk = [...result.results].reverse().find((r) => r.ok);
+      if (lastOk && lastOk.ok) {
+        restoreSelectionById("codex", lastOk.accountId);
+      }
+      setStatus({
+        text: `imported ${result.success} ok · ${result.failed} failed`,
+        tone: result.success > 0 ? "ok" : "err",
+      });
+      refreshViews();
+      if (lastOk && lastOk.ok) {
+        const acct = view
+          .list()
+          .find((a) => a.accountId === lastOk.accountId);
+        if (acct) void probeAndRecord("codex", view, acct);
+      }
+    } catch (err) {
+      setStatus({
+        text: `import failed: ${(err as Error).message}`,
+        tone: "err",
+      });
+    } finally {
+      busy = false;
+    }
   }
 
   function beginKiroWizard(method: KiroAddWizard["method"]): void {
@@ -2019,6 +2231,10 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
   }
 
   async function commitEdit(): Promise<void> {
+    if (codexWizard) {
+      await finishCodexJsonImport();
+      return;
+    }
     if (kiroWizard) {
       await advanceKiroWizard();
       return;
@@ -2293,6 +2509,38 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
   (tabText as TextWithTuiMouse).tuiOnMouseDown = onTabMouseDown;
   tabText.onMouseDown = onTabMouseDown;
 
+  let lastProbeError = "";
+
+  function shortProbeError(err: unknown): string {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/refresh_token_invalidated|session has ended|invalid_grant/i.test(msg)) {
+      return "session ended — re-login (o / a)";
+    }
+    if (/deactivated_workspace/i.test(msg)) {
+      return "workspace deactivated — remove or re-login";
+    }
+    if (/authentication token has been invalidated/i.test(msg)) {
+      return "token invalidated — re-login";
+    }
+    if (/usage probe failed HTTP (\d+)/i.test(msg)) {
+      const m = msg.match(/usage probe failed HTTP (\d+)/i);
+      return `probe HTTP ${m?.[1] ?? "?"}`;
+    }
+    if (/token refresh failed/i.test(msg)) {
+      return "token refresh failed";
+    }
+    const oneLine = msg.replace(/\s+/g, " ").trim();
+    return oneLine.length > 72 ? `${oneLine.slice(0, 69)}…` : oneLine;
+  }
+
+  function isTerminalAuthProbeError(err: unknown): boolean {
+    if (isInvalidGrantError(err)) return true;
+    const msg = err instanceof Error ? err.message : String(err);
+    return /deactivated_workspace|refresh_token_invalidated|session has ended/i.test(
+      msg,
+    );
+  }
+
   async function probeAndRecord(
     tab: TuiTab,
     v: ProviderAccountView,
@@ -2300,8 +2548,8 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
   ): Promise<ProbeOutcome> {
     const ad = ADAPTERS[tab];
     if (!ad.probeQuota) return "failure";
+    lastProbeError = "";
     try {
-      const tokens = await v.ensureFreshToken(account.accountId);
       const orgId =
         account.provider === "codex"
           ? (account as CodexAccountMetadata).organizationId
@@ -2310,9 +2558,26 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
         accountId: account.accountId,
         organizationId: orgId,
       };
-      const raw = opts.probeQuota
-        ? await opts.probeQuota(tab, tokens.accessToken, probeArgs)
-        : await ad.probeQuota!(tokens.accessToken, probeArgs);
+
+      const runProbe = async (force: boolean) => {
+        const tokens = await v.ensureFreshToken(account.accountId, force);
+        return opts.probeQuota
+          ? await opts.probeQuota(tab, tokens.accessToken, probeArgs)
+          : await ad.probeQuota!(tokens.accessToken, probeArgs);
+      };
+
+      let raw: unknown;
+      try {
+        raw = await runProbe(false);
+      } catch (firstErr) {
+        const msg =
+          firstErr instanceof Error ? firstErr.message : String(firstErr);
+        const retryableAuth =
+          /HTTP 401|authentication token has been invalidated/i.test(msg) &&
+          !isTerminalAuthProbeError(firstErr);
+        if (!retryableAuth) throw firstErr;
+        raw = await runProbe(true);
+      }
       const result = asRecord(raw) ?? {};
 
       if (tab === "xai") {
@@ -2345,25 +2610,28 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
           fail++;
         }
 
-        const fromPlan = deriveRemainingFromPlanUsage(planUsed, planLimit);
-        if (fromPlan) {
-          await v.recordBillingQuota(account.accountId, {
-            monthlyUsedPercent: fromPlan.monthlyUsedPercent,
-            remainingPercent: fromPlan.remainingPercent,
-            resetsAtMs:
-              asFiniteNumber(plan?.planPeriodEndMs) ??
-              asFiniteNumber(billing?.resetsAtMs),
-            observedAt: Date.now(),
-          });
-          ok++;
-        } else if (billing) {
+        if (billing) {
           const monthlyUsed = asFiniteNumber(billing.monthlyUsedPercent);
           const remaining = asFiniteNumber(billing.remainingPercent);
           if (monthlyUsed !== undefined && remaining !== undefined) {
+            const periodTypeRaw = asString(billing.periodType);
+            const periodType =
+              periodTypeRaw === "weekly" ||
+              periodTypeRaw === "monthly" ||
+              periodTypeRaw === "unknown"
+                ? periodTypeRaw
+                : undefined;
             await v.recordBillingQuota(account.accountId, {
               monthlyUsedPercent: monthlyUsed,
               remainingPercent: remaining,
               resetsAtMs: asFiniteNumber(billing.resetsAtMs),
+              periodType,
+              periodStartMs: asFiniteNumber(billing.periodStartMs),
+              periodEndMs: asFiniteNumber(billing.periodEndMs),
+              isUnifiedBillingUser:
+                typeof billing.isUnifiedBillingUser === "boolean"
+                  ? billing.isUnifiedBillingUser
+                  : undefined,
               observedAt: asFiniteNumber(billing.observedAt) ?? Date.now(),
             });
             ok++;
@@ -2371,7 +2639,19 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
             fail++;
           }
         } else if (result.billingError) {
-          fail++;
+          const fromPlan = deriveRemainingFromPlanUsage(planUsed, planLimit);
+          if (fromPlan) {
+            await v.recordBillingQuota(account.accountId, {
+              monthlyUsedPercent: fromPlan.monthlyUsedPercent,
+              remainingPercent: fromPlan.remainingPercent,
+              resetsAtMs: asFiniteNumber(plan?.planPeriodEndMs),
+              periodType: "monthly",
+              observedAt: Date.now(),
+            });
+            ok++;
+          } else {
+            fail++;
+          }
         }
 
         if (ok > 0 && fail > 0) return "partial";
@@ -2402,9 +2682,10 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
       });
       return "success";
     } catch (err) {
-      if (isInvalidGrantError(err)) {
+      if (isTerminalAuthProbeError(err)) {
         await v.markDeadCandidate(account.accountId);
       }
+      lastProbeError = shortProbeError(err);
       return "failure";
     }
   }
@@ -2490,6 +2771,26 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
         refreshViews();
         return;
       }
+      case "cycle-selection": {
+        const next = cycleSelectionStrategy();
+        setStatus({
+          text: `selection: ${selectionStrategyLabel(next)}`,
+          tone: "ok",
+        });
+        refreshViews();
+        return;
+      }
+      case "toggle-codex-fast": {
+        const on = toggleCodexFastMode();
+        setStatus({
+          text: on
+            ? "Codex Fast ON · service_tier=fast (higher credits)"
+            : "Codex Fast OFF · standard tier",
+          tone: on ? "ok" : "info",
+        });
+        refreshViews();
+        return;
+      }
       case "help": {
         helpVisible = !helpVisible;
         paintDetail();
@@ -2500,6 +2801,7 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
           const acc = selectedAccount();
           if (!acc) return;
           const id = acc.accountId;
+          await view().moveToFront(id);
           await view().switchTo(id);
           restoreSelectionById(activeTab, id);
           setStatus({
@@ -2520,8 +2822,15 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
             id,
             action === "prio-up" ? "up" : "down",
           );
+          const head = view().list()[0];
+          if (action === "prio-up" && head?.accountId === id) {
+            await view().switchTo(id);
+          }
           restoreSelectionById(activeTab, id);
-          setStatus({ text: `priority ${action === "prio-up" ? "up" : "down"}`, tone: "ok" });
+          setStatus({
+            text: `moved ${action === "prio-up" ? "up" : "down"}`,
+            tone: "ok",
+          });
           refreshViews();
         });
         return;
@@ -2532,8 +2841,12 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
           if (!acc) return;
           const id = acc.accountId;
           await view().moveToFront(id);
+          await view().switchTo(id);
           restoreSelectionById(activeTab, id);
-          setStatus({ text: "priority top", tone: "ok" });
+          setStatus({
+            text: `Active ${TAB_LABELS[activeTab]}: ${accountDisplayName(acc)}`,
+            tone: "ok",
+          });
           refreshViews();
         });
         return;
@@ -2681,7 +2994,9 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
                 ? "refreshed"
                 : outcome === "partial"
                   ? "partial refresh"
-                  : "refresh failed",
+                  : lastProbeError
+                    ? `refresh failed: ${lastProbeError}`
+                    : "refresh failed",
             tone:
               outcome === "success"
                 ? "ok"
@@ -2700,14 +3015,21 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
           const snapshot = [...v.list()];
           let ok = 0;
           let fail = 0;
+          let lastFail = "";
           for (const acc of snapshot) {
             if (!alive) break;
             const outcome = await probeAndRecord(tab, v, acc);
+            if (outcome === "failure" && lastProbeError) {
+              lastFail = lastProbeError;
+            }
             if (outcome === "failure") fail++;
             else ok++;
           }
           setStatus({
-            text: `refreshed ${ok}${fail ? ` · ${fail} failed` : ""}`,
+            text:
+              fail && lastFail
+                ? `refreshed ${ok} · ${fail} failed (${lastFail})`
+                : `refreshed ${ok}${fail ? ` · ${fail} failed` : ""}`,
             tone: fail && ok ? "warn" : fail ? "err" : "ok",
           });
           if (tab === activeTab) refreshViews();
@@ -2776,7 +3098,25 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
         }
         beginKiroWizard("idc-arn");
         return;
+      case "add-codex-json":
+        if (activeTab === "kiro") {
+          beginKiroWizard("json");
+          return;
+        }
+        if (activeTab !== "codex") {
+          setStatus({
+            text: "switch to Codex tab for OAuth JSON import",
+            tone: "warn",
+          });
+          return;
+        }
+        beginCodexJsonWizard();
+        return;
       case "add-kiro-json":
+        if (activeTab === "codex") {
+          beginCodexJsonWizard();
+          return;
+        }
         if (activeTab !== "kiro") {
           setStatus({ text: "switch to Kiro tab for JSON import", tone: "warn" });
           return;
@@ -2954,10 +3294,8 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
     const tab = activeTab;
     const started = gens[tab]!;
     const v = manager.providerView(tab);
-    const accounts = v.list();
-    if (accounts.length === 0) return;
-    const idx = selection[tab]!;
-    const acc = accounts[idx];
+    if (v.list().length === 0) return;
+    const acc = tab === activeTab ? selectedAccount() : undefined;
     if (!acc) return;
 
     liveBusy = true;
@@ -3022,10 +3360,12 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
       return;
     }
 
-    if (isActivateKey({ name: keyName, sequence: seq })) {
-      if (focusPane !== "actions") {
-        focusActionsPane();
-      }
+    if (
+      isActivateKey({ name: keyName, sequence: seq }) &&
+      focusPane !== "actions"
+    ) {
+      key.preventDefault();
+      focusActionsPane();
       activateActionMenuSelection();
       return;
     }

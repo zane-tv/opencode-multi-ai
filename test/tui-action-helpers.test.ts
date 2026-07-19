@@ -376,13 +376,23 @@ describe("action menu hierarchy", () => {
     });
   });
 
-  it("add group lists kiro login methods only on kiro tab", () => {
+  it("add group lists provider-specific login methods", () => {
     let level = openActionMenuGroup(createActionMenuLevel(), "add");
     const xaiItems = actionMenuItems(level, "xai");
     const xaiActions = xaiItems
       .filter((i) => i.kind === "action")
       .map((i) => (i.kind === "action" ? i.binding.action : ""));
     expect(xaiActions).toEqual(["add-device", "add-browser"]);
+
+    const codexItems = actionMenuItems(level, "codex");
+    const codexActions = codexItems
+      .filter((i) => i.kind === "action")
+      .map((i) => (i.kind === "action" ? i.binding.action : ""));
+    expect(codexActions).toEqual([
+      "add-device",
+      "add-browser",
+      "add-codex-json",
+    ]);
 
     const kiroItems = actionMenuItems(level, "kiro");
     const kiroActions = kiroItems
@@ -398,12 +408,12 @@ describe("action menu hierarchy", () => {
     ]);
   });
 
-  it("decodes kiro add hotkeys", () => {
+  it("decodes kiro/codex add hotkeys", () => {
     expect(decodeTuiAction(key({ name: "i" }))).toBe("add-kiro-api-key");
     expect(decodeTuiAction(key({ name: "i", shift: true }))).toBe(
       "add-kiro-idc-arn",
     );
-    expect(decodeTuiAction(key({ name: "o" }))).toBe("add-kiro-json");
+    expect(decodeTuiAction(key({ name: "o" }))).toBe("add-codex-json");
     expect(decodeTuiAction(key({ name: "o", shift: true }))).toBe(
       "add-kiro-export",
     );
@@ -412,5 +422,13 @@ describe("action menu hierarchy", () => {
     expect(decodeTuiAction(key({ name: "k" }))).toBeUndefined();
     expect(decodeTuiAction(key({ name: "c" }))).toBe("add-kiro-cli");
     expect(decodeTuiAction(key({ name: "c", ctrl: true }))).toBe("quit");
+  });
+
+  it("decodes Shift+F as Codex Fast toggle; bare f stays flag", () => {
+    expect(decodeTuiAction(key({ name: "f" }))).toBe("flag");
+    expect(decodeTuiAction(key({ name: "f", shift: true }))).toBe(
+      "toggle-codex-fast",
+    );
+    expect(decodeTuiAction(key({ sequence: "F" }))).toBe("toggle-codex-fast");
   });
 });

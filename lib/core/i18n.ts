@@ -153,7 +153,13 @@ const en: Dict = {
   in_m: "in {n}m",
   in_h: "in {n}h",
   in_d: "in {n}d",
-  brand: "  op-ai  ·  SuperGrok + Codex multi-account",
+  brand: "OpenCode Multi AI · SuperGrok + Codex + Kiro",
+  selection_mode: "m  Selection",
+  desc_selection_mode:
+    "Cycle account selection: sticky → round-robin → lowest-usage",
+  codex_fast: "F  Codex Fast",
+  desc_codex_fast:
+    "Toggle Codex Fast mode (service_tier=fast · 1.5x speed · higher credits). Applies to codex-multi inference",
   status_hint:
     "  ↑↓/mouse select  ·  Tab panes  ·  live: ALL accounts ~20s · parallel batches ×4",
   footer:
@@ -173,6 +179,7 @@ const en: Dict = {
   menu_desc_account: "Switch, enable/disable, priority",
   menu_desc_edit: "Label, tags, note",
   menu_desc_add: "Device or browser OAuth",
+  menu_desc_add_codex: "Device, browser OAuth, or paste OAuth JSON",
   menu_desc_add_kiro:
     "API key, Builder ID / IDC, Profile ARN, JSON import, kiro-cli",
   menu_desc_quota: "Refresh, live probe, reload pool",
@@ -182,10 +189,11 @@ const en: Dict = {
   empty_hint:
     "opencode auth login → xai-multi / codex-multi / kiro-multi",
   no_accounts:
-    "No accounts yet.\n\nAdd one:\n  xAI/Codex: a device · A browser\n  Kiro: a IDC · i API key · I ARN · o JSON · O export · c kiro-cli\n  Esc cancels while waiting\n\nTabs: Codex | xAI | Kiro",
+    "No accounts yet.\n\nAdd one:\n  Codex: a device · A browser · o OAuth JSON\n  xAI: a device · A browser\n  Kiro: a IDC · i API key · I ARN · o JSON · O export · c kiro-cli\n  Esc cancels while waiting\n\nTabs: Codex | xAI | Kiro",
   lang_switched: "Language: English",
   add_device: "a  Add (device)",
   add_browser: "A  Add (browser)",
+  add_codex_json: "o  Import OAuth JSON",
   add_kiro_api_key: "i  API key (ksk_)",
   add_kiro_idc_arn: "I  IDC + Profile ARN",
   add_kiro_json: "o  Import credentials JSON",
@@ -216,6 +224,8 @@ const en: Dict = {
     "Start device OAuth for the active tab — open URL, enter code; Esc cancels mid-flow",
   desc_add_browser:
     "Open browser OAuth on the active tab's loopback — same pool upsert; Esc cancels",
+  desc_add_codex_json:
+    "Paste Codex OAuth JSON (tokens / auth.json shape) or a file path — bulk import supported",
   desc_add_kiro_api_key:
     "Add Kiro account with API key (ksk_…) and optional region",
   desc_add_kiro_idc_arn:
@@ -279,7 +289,13 @@ const vi: Dict = {
   in_m: "sau {n} phút",
   in_h: "sau {n} giờ",
   in_d: "sau {n} ngày",
-  brand: "  op-ai  ·  SuperGrok + Codex đa tài khoản",
+  brand: "OpenCode Multi AI · SuperGrok + Codex + Kiro",
+  selection_mode: "m  Chọn acc",
+  desc_selection_mode:
+    "Đổi cách chọn acc: sticky → round-robin → lowest-usage",
+  codex_fast: "F  Codex Fast",
+  desc_codex_fast:
+    "Bật/tắt Codex Fast (service_tier=fast · nhanh hơn 1.5x · tốn credit hơn). Áp dụng inference codex-multi",
   status_hint:
     "  ↑↓/chuột chọn  ·  Tab panel  ·  live: TẤT CẢ acc ~20s · batch song song ×4",
   footer:
@@ -299,6 +315,7 @@ const vi: Dict = {
   menu_desc_account: "Switch, bật/tắt, ưu tiên",
   menu_desc_edit: "Nhãn, tags, ghi chú",
   menu_desc_add: "OAuth thiết bị hoặc trình duyệt",
+  menu_desc_add_codex: "OAuth thiết bị, trình duyệt, hoặc dán OAuth JSON",
   menu_desc_add_kiro:
     "API key, Builder ID / IDC, Profile ARN, import JSON, kiro-cli",
   menu_desc_quota: "Refresh, live probe, tải lại pool",
@@ -308,10 +325,11 @@ const vi: Dict = {
   empty_hint:
     "opencode auth login → xai-multi / codex-multi / kiro-multi",
   no_accounts:
-    "Chưa có tài khoản.\n\nThêm:\n  xAI/Codex: a mã thiết bị · A trình duyệt\n  Kiro: a IDC · i API key · I ARN · o JSON · O export · c kiro-cli\n  Esc huỷ khi đang chờ\n\nTab: Codex | xAI | Kiro",
+    "Chưa có tài khoản.\n\nThêm:\n  Codex: a mã thiết bị · A trình duyệt · o OAuth JSON\n  xAI: a mã thiết bị · A trình duyệt\n  Kiro: a IDC · i API key · I ARN · o JSON · O export · c kiro-cli\n  Esc huỷ khi đang chờ\n\nTab: Codex | xAI | Kiro",
   lang_switched: "Ngôn ngữ: Tiếng Việt",
   add_device: "a  Thêm (mã thiết bị)",
   add_browser: "A  Thêm (trình duyệt)",
+  add_codex_json: "o  Import OAuth JSON",
   add_kiro_api_key: "i  API key (ksk_)",
   add_kiro_idc_arn: "I  IDC + Profile ARN",
   add_kiro_json: "o  Import credentials JSON",
@@ -342,6 +360,8 @@ const vi: Dict = {
     "OAuth mã thiết bị cho tab đang chọn — mở URL, nhập mã; Esc huỷ giữa chừng",
   desc_add_browser:
     "OAuth trình duyệt loopback của tab đang chọn — upsert vào pool; Esc huỷ",
+  desc_add_codex_json:
+    "Dán OAuth JSON Codex (tokens / auth.json) hoặc đường dẫn file — hỗ trợ import nhiều account",
   desc_add_kiro_api_key:
     "Thêm tài khoản Kiro bằng API key (ksk_…) và region tuỳ chọn",
   desc_add_kiro_idc_arn:

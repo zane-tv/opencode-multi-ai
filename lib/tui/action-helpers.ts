@@ -13,8 +13,11 @@ export type TuiAction =
   | "tab-kiro"
   | "tab-next"
   | "toggle-locale"
+  | "cycle-selection"
+  | "toggle-codex-fast"
   | "add-device"
   | "add-browser"
+  | "add-codex-json"
   | "add-kiro-api-key"
   | "add-kiro-idc-arn"
   | "add-kiro-json"
@@ -93,6 +96,13 @@ export const TUI_BINDINGS: readonly TuiBinding[] = Object.freeze([
     action: "add-kiro-idc-arn",
     labelKey: "add_kiro_idc_arn",
     descKey: "desc_add_kiro_idc_arn",
+    available: true,
+  },
+  {
+    key: "o",
+    action: "add-codex-json",
+    labelKey: "add_codex_json",
+    descKey: "desc_add_codex_json",
     available: true,
   },
   {
@@ -250,6 +260,20 @@ export const TUI_BINDINGS: readonly TuiBinding[] = Object.freeze([
     available: true,
   },
   {
+    key: "m",
+    action: "cycle-selection",
+    labelKey: "selection_mode",
+    descKey: "desc_selection_mode",
+    available: true,
+  },
+  {
+    key: "F",
+    action: "toggle-codex-fast",
+    labelKey: "codex_fast",
+    descKey: "desc_codex_fast",
+    available: true,
+  },
+  {
     key: "?",
     action: "help",
     labelKey: "how_to_add",
@@ -370,6 +394,8 @@ export function decodeTuiAction(key: TuiKeyEvent): TuiAction | undefined {
 
   if (letter === "q") return "quit";
   if (letter === "g") return "toggle-locale";
+  if (letter === "m") return "cycle-selection";
+  if (letter === "f" && (shift || seq === "F")) return "toggle-codex-fast";
   if (letter === "s") return "switch";
   if (letter === "e") return "enable";
   if (letter === "d") return "disable";
@@ -383,7 +409,9 @@ export function decodeTuiAction(key: TuiKeyEvent): TuiAction | undefined {
 
   if (letter === "a") return shift || seq === "A" ? "add-browser" : "add-device";
   if (letter === "i") return shift || seq === "I" ? "add-kiro-idc-arn" : "add-kiro-api-key";
-  if (letter === "o") return shift || seq === "O" ? "add-kiro-export" : "add-kiro-json";
+  if (letter === "o") {
+    return shift || seq === "O" ? "add-kiro-export" : "add-codex-json";
+  }
   if (letter === "c" && !ctrl) return "add-kiro-cli";
   if (letter === "r") return shift || seq === "R" ? "refresh-all" : "refresh";
   if (letter === "l") return shift || seq === "L" ? "reload" : "label";
@@ -531,7 +559,13 @@ const KIRO_ADD_ACTIONS: readonly TuiAction[] = [
   "add-kiro-cli",
 ];
 
-const XAI_CODEX_ADD_ACTIONS: readonly TuiAction[] = [
+const CODEX_ADD_ACTIONS: readonly TuiAction[] = [
+  "add-device",
+  "add-browser",
+  "add-codex-json",
+];
+
+const XAI_ADD_ACTIONS: readonly TuiAction[] = [
   "add-device",
   "add-browser",
 ];
@@ -540,10 +574,17 @@ export function addActionsForProvider(
   provider: ProviderKind | undefined,
 ): readonly TuiAction[] {
   if (provider === "kiro") return KIRO_ADD_ACTIONS;
-  return XAI_CODEX_ADD_ACTIONS;
+  if (provider === "codex") return CODEX_ADD_ACTIONS;
+  return XAI_ADD_ACTIONS;
 }
 
-const MAIN_TOP_ACTIONS: readonly TuiAction[] = ["help", "toggle-locale", "quit"];
+const MAIN_TOP_ACTIONS: readonly TuiAction[] = [
+  "help",
+  "toggle-locale",
+  "cycle-selection",
+  "toggle-codex-fast",
+  "quit",
+];
 
 export const ACTION_MENU_GROUP_META: Record<
   ActionMenuGroupId,
@@ -607,11 +648,15 @@ export function actionMenuItems(
       const keys =
         id === "add" && provider === "kiro"
           ? "a i I o O c"
-          : meta.keys;
+          : id === "add" && provider === "codex"
+            ? "a A o"
+            : meta.keys;
       const descKey =
         id === "add" && provider === "kiro"
           ? "menu_desc_add_kiro"
-          : meta.descKey;
+          : id === "add" && provider === "codex"
+            ? "menu_desc_add_codex"
+            : meta.descKey;
       items.push({
         kind: "group",
         id,

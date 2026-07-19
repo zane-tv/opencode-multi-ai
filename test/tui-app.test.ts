@@ -436,7 +436,7 @@ const hasOpenTuiFfi = typeof (globalThis as { Bun?: unknown }).Bun !== "undefine
     expect(help).not.toMatch(/\bm\s+magic\b/i);
   });
 
-  it("codex help has CLI JSON import lines; xai help does not", async () => {
+  it("codex help has OAuth JSON import lines; xai help does not", async () => {
     harness = await launchTui({
       storePath,
       settingsPath,
@@ -446,7 +446,7 @@ const hasOpenTuiFfi = typeof (globalThis as { Bun?: unknown }).Bun !== "undefine
     setup.mockInput.pressKey("?");
     await setup.renderOnce();
     let help = frameOf(setup);
-    expect(help).toMatch(/import-json|JSON import/i);
+    expect(help).toMatch(/OAuth JSON import|import --file|Paste OAuth JSON/i);
 
     setup.mockInput.pressKey("?");
     await setup.renderOnce();
@@ -455,7 +455,7 @@ const hasOpenTuiFfi = typeof (globalThis as { Bun?: unknown }).Bun !== "undefine
     setup.mockInput.pressKey("?");
     await setup.renderOnce();
     help = frameOf(setup);
-    expect(help).not.toMatch(/op-codex import-json/);
+    expect(help).not.toMatch(/op-codex import/);
   });
 
   it("fixed timestamp formats EN vs VI via format-time (TZ=UTC)", () => {
@@ -1082,6 +1082,46 @@ const hasOpenTuiFfi = typeof (globalThis as { Bun?: unknown }).Bun !== "undefine
     actionNode.setSelectedIndex(idx);
     actionNode.selectCurrent();
   }
+
+  it.each([
+    { key: "Enter", startPane: "actions" },
+    { key: "Space", startPane: "actions" },
+    { key: "Enter", startPane: "accounts" },
+    { key: "Space", startPane: "accounts" },
+  ] as const)(
+    "opens the selected action group with $key from the $startPane pane",
+    async ({ key, startPane }) => {
+      harness = await launchTui({ storePath, settingsPath });
+      const s = harness.setup();
+      const actionNode = s.renderer.root.findDescendantById(
+        "actions",
+      ) as SelectRenderable;
+      if (startPane === "actions") {
+        s.mockInput.pressTab({ shift: true });
+      }
+      const accountIndex = actionNode.options.findIndex((option) => {
+        const value = menuValue(option);
+        return value.type === "open" && value.group === "account";
+      });
+      expect(accountIndex).toBeGreaterThanOrEqual(0);
+      actionNode.setSelectedIndex(accountIndex);
+
+      if (key === "Enter") {
+        s.mockInput.pressEnter();
+      } else {
+        s.mockInput.pressKey(" ");
+      }
+      await s.renderOnce();
+      await s.flush().catch(() => undefined);
+
+      expect(
+        actionNode.options.some((option) => {
+          const value = menuValue(option);
+          return value.type === "run" && value.action === "switch";
+        }),
+      ).toBe(true);
+    },
+  );
 
   it("Shift+Tab focuses actions; submenu disable runs on selected account", async () => {
     harness = await launchTui({ storePath, settingsPath });

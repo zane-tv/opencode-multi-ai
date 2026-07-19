@@ -90,7 +90,7 @@ describe("i18n locale persistence", () => {
     expect(JSON.parse(fs.readFileSync(p, "utf8")).lang).toBe("vi");
 
     setLocale("en", false);
-    expect(t("brand")).toMatch(/op-ai/i);
+    expect(t("brand")).toMatch(/OpenCode Multi AI|SuperGrok|Codex/i);
     expect(t("empty_hint")).toMatch(/xai-multi|codex-multi/);
   });
 
