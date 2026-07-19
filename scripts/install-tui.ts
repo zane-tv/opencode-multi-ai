@@ -28,9 +28,13 @@ function tuiPluginPath(root: string = packageRoot()): string {
 
 function isOurTuiEntry(entry: unknown): boolean {
   if (typeof entry === "string") {
+    if (!entry.includes("opencode-multi-ai")) return false;
+    const norm = entry.replace(/\\/g, "/");
     return (
-      entry.includes("opencode-multi-ai") &&
-      (entry.includes("/tui") || entry.endsWith("tui.tsx") || entry.endsWith("/tui"))
+      norm.endsWith("tui.tsx") ||
+      norm.endsWith("/tui") ||
+      norm.includes("/plugin/tui") ||
+      /opencode-multi-ai\/?$/.test(norm)
     );
   }
   if (Array.isArray(entry) && typeof entry[0] === "string") {

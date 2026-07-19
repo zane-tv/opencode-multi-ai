@@ -17,11 +17,18 @@ export const THINKING_VARIANTS = {
   max: { thinkingConfig: { thinkingBudget: 32_768 } },
 } as const;
 
+const DISPLAY_NAMES: Readonly<Record<string, string>> = {
+  "claude-sonnet-5-thinking": "Claude Sonnet 5 Thinking",
+  "claude-opus-4-8-thinking": "Claude Opus 4.8 Thinking",
+};
+
 function displayName(id: string): string {
+  if (DISPLAY_NAMES[id]) return DISPLAY_NAMES[id];
   return id
     .replace(/-thinking$/i, " Thinking")
-    .replace(/-1m/gi, " 1M")
+    .replace(/-1m/gi, " · 1M")
     .replace(/claude-/gi, "Claude ")
+    .replace(/(\d)-(\d)/g, "$1.$2")
     .replace(/-/g, " ")
     .replace(/\b\w/g, (c) => c.toUpperCase())
     .replace(/1 M/g, "1M");

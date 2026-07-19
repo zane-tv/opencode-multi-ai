@@ -31,16 +31,7 @@ export const KIRO_REGIONS = [
 export type KiroRegion = (typeof KIRO_REGIONS)[number];
 
 export const MODEL_MAPPING: Readonly<Record<string, string>> = {
-  "claude-haiku-4-5-thinking": "claude-haiku-4.5",
-  "claude-sonnet-4-thinking": "claude-sonnet-4",
-  "claude-sonnet-4-5-thinking": "claude-sonnet-4.5",
-  "claude-sonnet-4-5-1m-thinking": "claude-sonnet-4.5-1m",
-  "claude-sonnet-4-6-thinking": "claude-sonnet-4.6",
-  "claude-sonnet-4-6-1m-thinking": "claude-sonnet-4.6-1m",
   "claude-sonnet-5-thinking": "claude-sonnet-5",
-  "claude-opus-4-5-thinking": "claude-opus-4.5",
-  "claude-opus-4-6-thinking": "claude-opus-4.6",
-  "claude-opus-4-7-thinking": "claude-opus-4.7",
   "claude-opus-4-8-thinking": "claude-opus-4.8",
 };
 

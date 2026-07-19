@@ -1,11 +1,12 @@
+/** @jsxImportSource @opentui/solid */
 /**
  * OpenCode session sidebar: ACTIVE multi-ai account + quota.
  *
  * Target-exclusive TUI module — default export `{ id, tui }` only (no server).
  * Register in ~/.config/opencode/tui.json:
  *   "plugin": ["/absolute/path/to/opencode-multi-ai/lib/plugin/tui.tsx"]
- *
- * @jsxImportSource @opentui/solid
+ * or package export:
+ *   "plugin": ["/absolute/path/to/opencode-multi-ai/tui"]
  */
 
 import type {
@@ -77,7 +78,7 @@ async function loadPanel(
   } catch (err) {
     return {
       status: "error",
-      message: (err as Error).message.slice(0, 120),
+      message: (err as Error).message.slice(0, 160),
     };
   }
 }
@@ -136,7 +137,14 @@ function ActiveAccountsSidebar(props: {
   const [panel, setPanel] = createSignal<PanelState>({ status: "loading" });
 
   const reload = () => {
-    void loadPanel(props.api, props.sessionId).then(setPanel);
+    void loadPanel(props.api, props.sessionId).then((next) => {
+      setPanel(next);
+      try {
+        props.api.renderer.requestRender();
+      } catch {
+        // renderer torn down mid-reload; the next tick repaints.
+      }
+    });
   };
 
   createEffect(() => {
@@ -179,9 +187,7 @@ function ActiveAccountsSidebar(props: {
         </text>
       </Show>
       <Show when={panel().status === "ready"}>
-        <For
-          each={(panel() as { rows: ActiveQuotaRow[] }).rows}
-        >
+        <For each={(panel() as { rows: ActiveQuotaRow[] }).rows}>
           {(row) => <ActiveRow api={props.api} row={row} />}
         </For>
       </Show>

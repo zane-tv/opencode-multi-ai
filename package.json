@@ -51,22 +51,16 @@
     "@opencode-ai/plugin": "^1.0.0",
     "@opencode-ai/sdk": "^1.0.0",
     "@opentui/core": "0.4.3",
+    "@opentui/keymap": "0.4.3",
+    "@opentui/solid": "0.4.3",
     "@smithy/node-http-handler": "^4.6.1",
+    "solid-js": "1.9.12",
     "zod": "^3.23.8"
   },
   "optionalDependencies": {
     "libsql": "^0.5.29"
   },
-  "peerDependencies": {
-    "@opentui/solid": ">=0.4.3"
-  },
-  "peerDependenciesMeta": {
-    "@opentui/solid": {
-      "optional": true
-    }
-  },
   "devDependencies": {
-    "@opentui/solid": "0.4.3",
     "@types/node": "^20.14.0",
     "typescript": "^5.5.0",
     "vitest": "^2.0.0"
