@@ -103,15 +103,92 @@ describe.each(PROVIDER_CASES)(
       ]);
 
       await manager.movePriority(provider, "a", "up");
-      const ids = manager.list(provider).map((account) => account.accountId);
-      expect(ids[0]).toBe("a");
-      expect(ids).toContain("c");
+      expect(manager.list(provider).map((account) => account.accountId)).toEqual([
+        "a",
+        "c",
+        "b",
+      ]);
 
       await manager.movePriority(provider, "a", "down");
-      expect(manager.list(provider)[1]?.accountId).toBe("a");
+      expect(manager.list(provider).map((account) => account.accountId)).toEqual([
+        "c",
+        "a",
+        "b",
+      ]);
 
       await manager.moveToFront(provider, "b");
-      expect(manager.list(provider)[0]?.accountId).toBe("b");
+      expect(manager.list(provider).map((account) => account.accountId)).toEqual([
+        "b",
+        "c",
+        "a",
+      ]);
+    });
+
+    it("move up/down swaps adjacent list rows and renumbers priorities", async () => {
+      const storage: AccountStorage = {
+        version: 3,
+        accounts: [
+          makeAccount(provider, "a", 3, 1),
+          makeAccount(provider, "b", 2, 2),
+          makeAccount(provider, "c", 1, 3),
+        ],
+        sticky: stickyFor(provider, "a"),
+      };
+      await saveAccounts(storage, storePath);
+      const manager = new AccountManager(storePath);
+      await manager.load();
+
+      await manager.movePriority(provider, "c", "up");
+      expect(manager.list(provider).map((a) => a.accountId)).toEqual([
+        "a",
+        "c",
+        "b",
+      ]);
+      expect(manager.list(provider).map((a) => a.priority)).toEqual([2, 1, 0]);
+
+      await manager.movePriority(provider, "c", "up");
+      expect(manager.list(provider).map((a) => a.accountId)).toEqual([
+        "c",
+        "a",
+        "b",
+      ]);
+      expect(manager.list(provider).map((a) => a.priority)).toEqual([2, 1, 0]);
+    });
+
+    it("does not swap across health bands (quota stays below ready)", async () => {
+      const now = Date.now();
+      const readyA = makeAccount(provider, "ready", 5, 1);
+      const readyB = makeAccount(provider, "ready2", 4, 2);
+      const quota = makeAccount(provider, "quota", 3, 3);
+      quota.quotaResetAt = now + 60_000;
+      const storage: AccountStorage = {
+        version: 3,
+        accounts: [readyA, readyB, quota],
+        sticky: stickyFor(provider, "ready"),
+      };
+      await saveAccounts(storage, storePath);
+      const manager = new AccountManager(storePath);
+      await manager.load();
+
+      expect(manager.list(provider).map((a) => a.accountId)).toEqual([
+        "ready",
+        "ready2",
+        "quota",
+      ]);
+
+      await manager.movePriority(provider, "quota", "up");
+      expect(manager.list(provider).map((a) => a.accountId)).toEqual([
+        "ready",
+        "ready2",
+        "quota",
+      ]);
+
+      await manager.moveToFront(provider, "quota");
+      expect(manager.list(provider).map((a) => a.accountId)).toEqual([
+        "ready",
+        "ready2",
+        "quota",
+      ]);
     });
 
     it("selectAccount prefers sticky then the first priority-sorted account", async () => {

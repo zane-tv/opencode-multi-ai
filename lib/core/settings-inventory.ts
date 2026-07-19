@@ -56,6 +56,8 @@ export const SETTINGS_ENV = {
   lang: "MULTI_AI_LANG",
   langXaiFallback: "MULTI_XAI_LANG",
   langCodexFallback: "MULTI_CODEX_LANG",
+  codexFast: "MULTI_AI_CODEX_FAST",
+  codexFastFallback: "MULTI_CODEX_FAST",
   /** Debug logging. */
   debug: "MULTI_AI_DEBUG",
   /** Global CLI shim install dir (falls back to MULTI_XAI_BIN_DIR / MULTI_CODEX_BIN_DIR). */

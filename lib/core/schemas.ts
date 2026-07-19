@@ -80,9 +80,9 @@ const AccountBaseFields = {
   lastSwitchReason: LastSwitchReasonSchema.default("initial"),
 
   /** Epoch ms when a quota-exhausted account may recover. */
-  quotaResetAt: z.number().optional(),
-  coolingDownUntil: z.number().optional(),
-  cooldownReason: CooldownReasonSchema.optional(),
+  quotaResetAt: z.number().nullish().transform((v) => v ?? undefined),
+  coolingDownUntil: z.number().nullish().transform((v) => v ?? undefined),
+  cooldownReason: CooldownReasonSchema.nullish().transform((v) => v ?? undefined),
 
   subscriptionStatus: SubscriptionStatusSchema.default("unknown"),
   subscriptionCheckedAt: z.number().optional(),
@@ -112,11 +112,15 @@ const XaiSpecificFields = {
   /** Last request cost in xAI ticks (1 USD = 1e10 ticks), if body was readable. */
   lastCostInUsdTicks: z.number().optional(),
 
-  /** SuperGrok/Grok Build monthly credits % used (grok.com GetGrokCreditsConfig). */
+  /** Grok Build credit period usage % (weekly or monthly pool). */
   billingMonthlyUsedPercent: z.number().optional(),
   billingRemainingPercent: z.number().optional(),
-  /** Epoch ms when monthly credits reset. */
+  /** Epoch ms when the active credit period ends (next reset). */
   billingResetsAt: z.number().optional(),
+  billingPeriodType: z.enum(["weekly", "monthly", "unknown"]).optional(),
+  billingPeriodStartMs: z.number().optional(),
+  billingPeriodEndMs: z.number().optional(),
+  billingIsUnified: z.boolean().optional(),
   /** Epoch ms when billing snapshot was fetched. */
   billingObservedAt: z.number().optional(),
 

@@ -11,6 +11,7 @@ import type { ProviderKind } from "./adapter.js";
 import type { AccountManager } from "./accounts.js";
 import type { AccountMetadata } from "./schemas.js";
 import type { RotationAccount, RotationManager } from "./rotation-fetch.js";
+import { getSelectionStrategy } from "./selection-strategy.js";
 
 function asOptionalNumber(v: unknown): number | undefined {
   return typeof v === "number" && Number.isFinite(v) ? v : undefined;
@@ -41,7 +42,11 @@ export function toRotationManager(
 ): RotationManager {
   return {
     selectAccount: (p, attempted) => {
-      const account = manager.selectAccount(p, attempted);
+      const account = manager.selectAccount(
+        p,
+        attempted,
+        getSelectionStrategy(),
+      );
       return account ? toRotationAccount(account) : null;
     },
     ensureFreshToken: (p, id, force) => manager.ensureFreshToken(p, id, force),
@@ -100,10 +105,24 @@ export function toRotationManager(
       const remaining =
         asOptionalNumber(snap.remainingPercent) ??
         Math.max(0, 100 - monthlyUsed);
+      const periodTypeRaw = asOptionalString(snap.periodType);
+      const periodType =
+        periodTypeRaw === "weekly" ||
+        periodTypeRaw === "monthly" ||
+        periodTypeRaw === "unknown"
+          ? periodTypeRaw
+          : undefined;
       await manager.recordBillingQuota(provider, id, {
         monthlyUsedPercent: monthlyUsed,
         remainingPercent: remaining,
         resetsAtMs: asOptionalNumber(snap.resetsAtMs),
+        periodType,
+        periodStartMs: asOptionalNumber(snap.periodStartMs),
+        periodEndMs: asOptionalNumber(snap.periodEndMs),
+        isUnifiedBillingUser:
+          typeof snap.isUnifiedBillingUser === "boolean"
+            ? snap.isUnifiedBillingUser
+            : undefined,
         observedAt: asOptionalNumber(snap.observedAt),
       });
     },
@@ -144,7 +163,7 @@ export type KiroFetchManager = {
 export function toKiroFetchManager(manager: AccountManager): KiroFetchManager {
   return {
     selectAccount: (p, attempted, policy) =>
-      manager.selectAccount(p, attempted, policy),
+      manager.selectAccount(p, attempted, policy ?? getSelectionStrategy()),
     ensureFreshToken: (p, id, force) => manager.ensureFreshToken(p, id, force),
     markQuotaExhausted: (p, id, resetAt) =>
       manager.markQuotaExhausted(p, id, resetAt),
