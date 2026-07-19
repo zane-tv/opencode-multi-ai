@@ -83,7 +83,11 @@ describe("buildActiveQuotaRows", () => {
             planName: "SuperGrok Heavy",
             planUsed: 0,
             planMonthlyLimit: 150_000,
-            billingRemainingPercent: 59,
+            planPeriodEndMs: NOW + 12 * 24 * 60 * 60 * 1000,
+            billingRemainingPercent: 27,
+            billingMonthlyUsedPercent: 73,
+            billingPeriodType: "weekly",
+            billingResetsAt: NOW + 3 * 24 * 60 * 60 * 1000,
           },
         ],
       }),
@@ -92,9 +96,9 @@ describe("buildActiveQuotaRows", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]!.provider).toBe("xai");
     expect(rows[0]!.displayName).toBe("Heavy");
-    expect(rows[0]!.remainingPercent).toBe(100);
+    expect(rows[0]!.remainingPercent).toBe(27);
     expect(rows[0]!.planLabel).toBe("SuperGrok Heavy");
-    expect(rows[0]!.detail).toMatch(/0 \/ 150k/);
+    expect(rows[0]!.detail).toBeUndefined();
   });
 
   it("renders the sticky Kiro account with count-based remaining quota", () => {

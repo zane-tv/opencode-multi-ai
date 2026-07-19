@@ -233,22 +233,23 @@ export function deriveRemainingFromPlanUsage(
   return { monthlyUsedPercent, remainingPercent };
 }
 
-/** Prefer plan used/limit over gRPC credits % (absolute SuperGrok allowance). */
+/** Prefer Grok Build period credits % over legacy absolute monthly units. */
 export function resolveXaiRemainingPercent(account: {
   billingRemainingPercent?: number;
+  billingPeriodType?: string;
   planUsed?: number;
   planMonthlyLimit?: number;
 }): number | undefined {
+  const bill = account.billingRemainingPercent;
+  if (typeof bill === "number" && Number.isFinite(bill)) {
+    return Math.max(0, Math.min(100, bill));
+  }
+
   const fromPlan = deriveRemainingFromPlanUsage(
     account.planUsed,
     account.planMonthlyLimit,
   );
   if (fromPlan) return fromPlan.remainingPercent;
-
-  const bill = account.billingRemainingPercent;
-  if (typeof bill === "number" && Number.isFinite(bill)) {
-    return Math.max(0, Math.min(100, bill));
-  }
   return undefined;
 }
 
@@ -257,4 +258,35 @@ export function formatPlanLimit(n?: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${Math.round(n / 1000)}k`;
   return String(Math.round(n));
+}
+
+export function resolveXaiCreditResetsAtMs(account: {
+  billingResetsAt?: number;
+  billingPeriodEndMs?: number;
+}): number | undefined {
+  if (
+    typeof account.billingResetsAt === "number" &&
+    Number.isFinite(account.billingResetsAt)
+  ) {
+    return account.billingResetsAt;
+  }
+  if (
+    typeof account.billingPeriodEndMs === "number" &&
+    Number.isFinite(account.billingPeriodEndMs)
+  ) {
+    return account.billingPeriodEndMs;
+  }
+  return undefined;
+}
+
+export function resolveXaiPlanResetsAtMs(account: {
+  planPeriodEndMs?: number;
+}): number | undefined {
+  if (
+    typeof account.planPeriodEndMs === "number" &&
+    Number.isFinite(account.planPeriodEndMs)
+  ) {
+    return account.planPeriodEndMs;
+  }
+  return undefined;
 }

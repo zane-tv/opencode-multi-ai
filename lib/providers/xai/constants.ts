@@ -107,7 +107,9 @@ export const DEFAULT_MODELS: Record<
     attachment: true,
     reasoning: true,
     modalities: GROK_CHAT_MODALITIES,
-    limit: { context: 500_000, output: 500_000 },
+    // Declared below xAI's real 500k prompt hard-cap so OpenCode auto-compacts
+    // with ~50k headroom; requests were overflowing the true cap otherwise.
+    limit: { context: 450_000, output: 500_000 },
     variants: {
       low: { reasoningEffort: "low" },
       medium: { reasoningEffort: "medium" },

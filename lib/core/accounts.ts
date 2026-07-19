@@ -93,6 +93,10 @@ type BillingQuotaSnapshot = {
   readonly monthlyUsedPercent: number;
   readonly remainingPercent: number;
   readonly resetsAtMs?: number;
+  readonly periodType?: "weekly" | "monthly" | "unknown";
+  readonly periodStartMs?: number;
+  readonly periodEndMs?: number;
+  readonly isUnifiedBillingUser?: boolean;
   readonly observedAt?: number;
 };
 
@@ -207,6 +211,49 @@ export function isSelectable(account: AccountMetadata, now: number): boolean {
   return true;
 }
 
+/** Closed Grok Build credit window (API often leaves stale used% after end). */
+function xaiCreditPeriodClosed(
+  account: Extract<AccountMetadata, { provider: "xai" }>,
+  now: number,
+): boolean {
+  const periodEnd =
+    typeof account.billingPeriodEndMs === "number" &&
+    Number.isFinite(account.billingPeriodEndMs)
+      ? account.billingPeriodEndMs
+      : typeof account.billingResetsAt === "number" &&
+          Number.isFinite(account.billingResetsAt)
+        ? account.billingResetsAt
+        : undefined;
+  if (periodEnd === undefined || periodEnd > now) return false;
+  // Only gate when we know this is a Build credit period (weekly/monthly).
+  const t = account.billingPeriodType;
+  return t === "weekly" || t === "monthly" || t === "unknown";
+}
+
+/**
+ * Effective xAI remaining % for selection/UI.
+ * Closed credit period → 0 (stale billing JSON often still shows 20–30% left).
+ */
+export function effectiveXaiRemainingPercent(
+  account: Extract<AccountMetadata, { provider: "xai" }>,
+  now: number = Date.now(),
+): number | undefined {
+  if (xaiCreditPeriodClosed(account, now)) return 0;
+  const rem = account.billingRemainingPercent;
+  if (typeof rem === "number" && Number.isFinite(rem)) {
+    return Math.max(0, Math.min(100, rem));
+  }
+  if (
+    typeof account.planUsed === "number" &&
+    typeof account.planMonthlyLimit === "number" &&
+    account.planMonthlyLimit > 0
+  ) {
+    const usedPct = (account.planUsed / account.planMonthlyLimit) * 100;
+    return Math.max(0, Math.min(100, 100 - usedPct));
+  }
+  return undefined;
+}
+
 export function isRotationReady(
   account: AccountMetadata,
   now: number,
@@ -228,7 +275,8 @@ export function isRotationReady(
   }
 
   if (account.provider === "xai") {
-    const rem = account.billingRemainingPercent;
+    if (xaiCreditPeriodClosed(account, now)) return false;
+    const rem = effectiveXaiRemainingPercent(account, now);
     if (typeof rem === "number" && rem <= 0) return false;
     if (
       typeof account.planUsed === "number" &&
@@ -354,6 +402,66 @@ function demoteAccountInProvider(
   sortAccountsByPriority(storage);
 }
 
+function providerAccountsSorted(
+  storage: AccountStorage,
+  provider: ProviderKind,
+  now: number = Date.now(),
+): AccountMetadata[] {
+  sortAccountsByPriority(storage, now);
+  return storage.accounts.filter((account) => account.provider === provider);
+}
+
+function renumberProviderPriorities(
+  ordered: readonly AccountMetadata[],
+): void {
+  const n = ordered.length;
+  for (let i = 0; i < n; i++) {
+    ordered[i]!.priority = n - 1 - i;
+  }
+}
+
+function promoteAccountInProvider(
+  storage: AccountStorage,
+  provider: ProviderKind,
+  account: AccountMetadata,
+  now: number = Date.now(),
+): void {
+  const ordered = providerAccountsSorted(storage, provider, now);
+  const from = ordered.findIndex((row) => row.accountId === account.accountId);
+  if (from <= 0) {
+    renumberProviderPriorities(ordered);
+    sortAccountsByPriority(storage, now);
+    return;
+  }
+  const rank = accountHealthRank(account, now);
+  let target = 0;
+  for (let i = 0; i < ordered.length; i++) {
+    if (accountHealthRank(ordered[i]!, now) === rank) {
+      target = i;
+      break;
+    }
+  }
+  if (from !== target) {
+    const [row] = ordered.splice(from, 1);
+    ordered.splice(target, 0, row!);
+  }
+  renumberProviderPriorities(ordered);
+  sortAccountsByPriority(storage, now);
+}
+
+function assignSticky(
+  storage: AccountStorage,
+  provider: ProviderKind,
+  account: AccountMetadata,
+  now: number = Date.now(),
+  opts?: { promote?: boolean },
+): void {
+  storage.sticky[provider] = account.accountId;
+  if (opts?.promote && isRotationReady(account, now)) {
+    promoteAccountInProvider(storage, provider, account);
+  }
+}
+
 function switchStickyIfUnselectable(
   storage: AccountStorage,
   provider: ProviderKind,
@@ -364,13 +472,14 @@ function switchStickyIfUnselectable(
   const account = storage.accounts.find((candidate) =>
     matchesIdentity(candidate, provider, id),
   );
-  if (account && isSelectable(account, now)) return;
+  if (account && isRotationReady(account, now)) return;
   const replacement = storage.accounts.find(
     (candidate) =>
-      candidate.provider === provider && isSelectable(candidate, now),
+      candidate.provider === provider && isRotationReady(candidate, now),
   );
-  if (replacement) storage.sticky[provider] = replacement.accountId;
-  else clearSticky(storage, provider);
+  if (replacement) {
+    assignSticky(storage, provider, replacement, now, { promote: true });
+  } else clearSticky(storage, provider);
 }
 
 function mergeOAuthAccount(
@@ -566,7 +675,9 @@ export class AccountManager {
 
     const next = this.pickByPolicy(storage, provider, eligible, policy);
     if (!next) return null;
-    storage.sticky[provider] = next.accountId;
+    assignSticky(storage, provider, next, now, {
+      promote: policy === "sticky",
+    });
     logger.debug(
       `selectAccount switched ${provider} sticky to ${next.accountId} (${policy})`,
     );
@@ -824,7 +935,9 @@ export class AccountManager {
       );
       if (!account) return;
       account.lastUsed = now;
-      storage.sticky[provider] = id;
+      if (isRotationReady(account, now)) {
+        assignSticky(storage, provider, account, now, { promote: false });
+      }
     });
   }
 
@@ -862,14 +975,74 @@ export class AccountManager {
   ): Promise<void> {
     if (provider !== "xai") return;
     const observedAt = snap.observedAt ?? Date.now();
-    await this.mutateNonToken(provider, id, (account) => {
-      if (account.provider !== "xai") return;
+    await this.mutateStorage((storage) => {
+      const account = storage.accounts.find((candidate) =>
+        matchesIdentity(candidate, provider, id),
+      );
+      if (!account || account.provider !== "xai") return;
       account.billingMonthlyUsedPercent = snap.monthlyUsedPercent;
       account.billingRemainingPercent = snap.remainingPercent;
       if (snap.resetsAtMs !== undefined) {
         account.billingResetsAt = snap.resetsAtMs;
       }
+      if (snap.periodType !== undefined) {
+        account.billingPeriodType = snap.periodType;
+      }
+      if (snap.periodStartMs !== undefined) {
+        account.billingPeriodStartMs = snap.periodStartMs;
+      }
+      const periodEnd = snap.periodEndMs ?? snap.resetsAtMs;
+      if (periodEnd !== undefined) {
+        account.billingPeriodEndMs = periodEnd;
+        if (account.billingResetsAt === undefined) {
+          account.billingResetsAt = periodEnd;
+        }
+      }
+      if (snap.isUnifiedBillingUser !== undefined) {
+        account.billingIsUnified = snap.isUnifiedBillingUser;
+      }
       account.billingObservedAt = observedAt;
+
+      // Closed Build period or 0 remaining → bench until next window.
+      const closed =
+        typeof periodEnd === "number" &&
+        periodEnd <= observedAt &&
+        (snap.periodType === "weekly" ||
+          snap.periodType === "monthly" ||
+          snap.periodType === "unknown");
+      const empty =
+        typeof snap.remainingPercent === "number" &&
+        snap.remainingPercent <= 0;
+      if (closed || empty) {
+        let resetAt = periodEnd ?? observedAt + 15 * 60_000;
+        if (typeof resetAt === "number" && resetAt <= observedAt) {
+          if (snap.periodType === "weekly") {
+            resetAt = resetAt + 7 * 24 * 60 * 60 * 1000;
+            while (resetAt <= observedAt) {
+              resetAt += 7 * 24 * 60 * 60 * 1000;
+            }
+          } else {
+            resetAt = observedAt + 60 * 60_000;
+          }
+        }
+        const already =
+          typeof account.quotaResetAt === "number" &&
+          account.quotaResetAt > observedAt;
+        if (!already || account.quotaResetAt! < resetAt) {
+          account.quotaResetAt = resetAt;
+        }
+        if (!already) {
+          account.lastSwitchReason = "quota-exhausted";
+          demoteAccountInProvider(storage, provider, account);
+        }
+        switchStickyIfUnselectable(storage, provider, id, observedAt);
+      } else if (
+        typeof account.quotaResetAt === "number" &&
+        account.quotaResetAt <= observedAt &&
+        isRotationReady(account, observedAt)
+      ) {
+        account.quotaResetAt = undefined;
+      }
     });
   }
 
@@ -905,8 +1078,12 @@ export class AccountManager {
   ): Promise<void> {
     if (provider !== "codex") return;
     const observedAt = snap.observedAt ?? Date.now();
-    await this.mutateNonToken(provider, id, (account) => {
-      if (account.provider !== "codex") return;
+    await this.mutateStorage((storage) => {
+      const account = storage.accounts.find((candidate) =>
+        matchesIdentity(candidate, provider, id),
+      );
+      if (!account || account.provider !== "codex") return;
+
       if (snap.planType !== undefined) account.planType = snap.planType;
       if (snap.primaryUsedPercent !== undefined) {
         account.primaryUsedPercent = snap.primaryUsedPercent;
@@ -928,6 +1105,38 @@ export class AccountManager {
       }
       if (snap.activeLimit !== undefined) account.activeLimit = snap.activeLimit;
       account.usageObservedAt = observedAt;
+
+      const primaryFull =
+        typeof account.primaryUsedPercent === "number" &&
+        account.primaryUsedPercent >= 100;
+      const secondaryOpen =
+        typeof account.secondaryWindowMinutes === "number" &&
+        account.secondaryWindowMinutes > 0 &&
+        typeof account.secondaryUsedPercent === "number" &&
+        account.secondaryUsedPercent < 100;
+      if (primaryFull && !secondaryOpen) {
+        const resetAt =
+          typeof account.primaryResetAt === "number" &&
+          account.primaryResetAt > observedAt
+            ? account.primaryResetAt
+            : observedAt + 15 * 60_000;
+        const alreadyMarked =
+          typeof account.quotaResetAt === "number" &&
+          account.quotaResetAt > observedAt;
+        if (!alreadyMarked || account.quotaResetAt! < resetAt) {
+          account.quotaResetAt = resetAt;
+        }
+        if (!alreadyMarked) {
+          account.lastSwitchReason = "quota-exhausted";
+          demoteAccountInProvider(storage, provider, account);
+        }
+        switchStickyIfUnselectable(storage, provider, id, observedAt);
+      } else if (
+        typeof account.quotaResetAt === "number" &&
+        account.quotaResetAt <= observedAt
+      ) {
+        account.quotaResetAt = undefined;
+      }
     });
   }
 
@@ -964,9 +1173,28 @@ export class AccountManager {
       account.entitlementBlocked = false;
       account.coolingDownUntil = undefined;
       account.cooldownReason = undefined;
-      account.quotaResetAt = undefined;
+      // Keep quotaResetAt when credit period is still closed — clearing it
+      // would let a spending-limit account become sticky and fail every call.
+      if (isRotationReady(account, Date.now())) {
+        account.quotaResetAt = undefined;
+      } else if (account.provider === "xai") {
+        const end =
+          typeof account.billingPeriodEndMs === "number"
+            ? account.billingPeriodEndMs
+            : typeof account.billingResetsAt === "number"
+              ? account.billingResetsAt
+              : undefined;
+        if (end !== undefined && end <= Date.now()) {
+          // Roll forward weekly window estimate so sticky can recover later.
+          let next = end + 7 * 24 * 60 * 60 * 1000;
+          while (next <= Date.now()) next += 7 * 24 * 60 * 60 * 1000;
+          account.quotaResetAt = next;
+        }
+      } else {
+        account.quotaResetAt = undefined;
+      }
       account.lastSwitchReason = "manual";
-      storage.sticky[provider] = id;
+      assignSticky(storage, provider, account, Date.now(), { promote: true });
     });
   }
 
@@ -1046,13 +1274,9 @@ export class AccountManager {
     direction: "up" | "down",
   ): Promise<void> {
     await this.mutateStorage((storage) => {
-      sortAccountsByPriority(storage);
-      const providerAccounts = storage.accounts.filter(
-        (account) => account.provider === provider,
-      );
-      const index = providerAccounts.findIndex(
-        (account) => account.accountId === id,
-      );
+      const now = Date.now();
+      const ordered = providerAccountsSorted(storage, provider, now);
+      const index = ordered.findIndex((account) => account.accountId === id);
       if (index === -1) {
         throw new Error(
           `cannot move: unknown account ${identityKey(provider, id)}`,
@@ -1060,28 +1284,24 @@ export class AccountManager {
       }
 
       const neighborIndex = direction === "up" ? index - 1 : index + 1;
-      const account = providerAccounts[index];
-      const neighbor = providerAccounts[neighborIndex];
+      const account = ordered[index];
+      const neighbor = ordered[neighborIndex];
       if (!account || !neighbor) return;
-
-      const accountPriority = account.priority;
-      const neighborPriority = neighbor.priority;
-      if (accountPriority === neighborPriority) {
-        account.priority =
-          direction === "up" ? neighborPriority + 1 : neighborPriority - 1;
-      } else {
-        account.priority = neighborPriority;
-        neighbor.priority = accountPriority;
+      if (accountHealthRank(account, now) !== accountHealthRank(neighbor, now)) {
+        return;
       }
+
+      ordered[index] = neighbor;
+      ordered[neighborIndex] = account;
+      renumberProviderPriorities(ordered);
+      sortAccountsByPriority(storage, now);
     });
   }
 
   async moveToFront(provider: ProviderKind, id: string): Promise<void> {
     await this.mutateStorage((storage) => {
-      const providerAccounts = storage.accounts.filter(
-        (account) => account.provider === provider,
-      );
-      const account = providerAccounts.find((candidate) =>
+      const now = Date.now();
+      const account = storage.accounts.find((candidate) =>
         matchesIdentity(candidate, provider, id),
       );
       if (!account) {
@@ -1089,10 +1309,7 @@ export class AccountManager {
           `cannot move: unknown account ${identityKey(provider, id)}`,
         );
       }
-      const maximumPriority = Math.max(
-        ...providerAccounts.map((candidate) => candidate.priority),
-      );
-      account.priority = maximumPriority + 1;
+      promoteAccountInProvider(storage, provider, account, now);
     });
   }
 

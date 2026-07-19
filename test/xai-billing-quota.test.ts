@@ -2,7 +2,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   parseGrpcWebBillingResponse,
+  parseCreditsBillingJson,
   fetchGrokBillingQuota,
+  billingPeriodLabel,
+  normalizeBillingPeriodType,
+  GROK_CREDITS_BILLING_URL,
 } from "../lib/providers/xai/request/billing-quota.js";
 
 afterEach(() => {
@@ -86,7 +90,7 @@ describe("parseGrpcWebBillingResponse", () => {
       1_700_000_000 * 1000,
     );
     expect(parsed.monthlyUsedPercent).toBeCloseTo(42.5, 2);
-    expect(parsed.remainingPercent).toBe(57); // 100 - Math.round(42.5)
+    expect(parsed.remainingPercent).toBe(57);
     expect(parsed.resetsAtMs).toBe(resetEpoch * 1000);
   });
 
@@ -105,7 +109,6 @@ describe("parseGrpcWebBillingResponse", () => {
   });
 
   it("uses 0% when credit_usage_percent omitted but current_period present", () => {
-    // Live SuperGrok Heavy / Premium+ shape: period timestamps only, no fixed32.
     const periodStart = 1_784_128_107;
     const periodEnd = 1_784_732_907;
     const period = concat(
@@ -127,11 +130,92 @@ describe("parseGrpcWebBillingResponse", () => {
     expect(parsed.monthlyUsedPercent).toBe(0);
     expect(parsed.remainingPercent).toBe(100);
     expect(parsed.resetsAtMs).toBe(periodEnd * 1000);
+    expect(parsed.periodType).toBe("weekly");
+  });
+});
+
+describe("parseCreditsBillingJson", () => {
+  it("reads weekly period + usage like Grok Build", () => {
+    const now = Date.parse("2026-07-19T12:00:00Z");
+    const parsed = parseCreditsBillingJson(
+      {
+        config: {
+          creditUsagePercent: 73.4,
+          currentPeriod: {
+            type: "USAGE_PERIOD_TYPE_WEEKLY",
+            start: "2026-07-15T15:08:00Z",
+            end: "2026-07-22T15:08:00Z",
+          },
+          isUnifiedBillingUser: true,
+        },
+      },
+      now,
+    );
+    expect(parsed.monthlyUsedPercent).toBeCloseTo(73.4, 1);
+    expect(parsed.remainingPercent).toBe(27);
+    expect(parsed.periodType).toBe("weekly");
+    expect(parsed.periodEndMs).toBe(Date.parse("2026-07-22T15:08:00Z"));
+    expect(parsed.resetsAtMs).toBe(parsed.periodEndMs);
+    expect(parsed.isUnifiedBillingUser).toBe(true);
+    expect(parsed.source).toBe("credits-json");
+  });
+
+  it("accepts snake_case and monthly enum", () => {
+    const parsed = parseCreditsBillingJson({
+      credit_usage_percent: 10,
+      current_period: {
+        period_type: "USAGE_PERIOD_TYPE_MONTHLY",
+        end: "2026-08-01T00:00:00Z",
+      },
+    });
+    expect(parsed.periodType).toBe("monthly");
+    expect(parsed.remainingPercent).toBe(90);
+  });
+});
+
+describe("billingPeriodLabel / normalizeBillingPeriodType", () => {
+  it("maps labels for UI", () => {
+    expect(normalizeBillingPeriodType("USAGE_PERIOD_TYPE_WEEKLY")).toBe(
+      "weekly",
+    );
+    expect(normalizeBillingPeriodType(2)).toBe("weekly");
+    expect(billingPeriodLabel("weekly")).toBe("Weekly limit");
+    expect(billingPeriodLabel("monthly")).toBe("Monthly limit");
+    expect(billingPeriodLabel(undefined)).toBe("Credits");
   });
 });
 
 describe("fetchGrokBillingQuota", () => {
-  it("posts empty grpc-web frame and parses body", async () => {
+  it("prefers format=credits JSON", async () => {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes("format=credits")) {
+        return new Response(
+          JSON.stringify({
+            config: {
+              creditUsagePercent: 50,
+              currentPeriod: {
+                type: "USAGE_PERIOD_TYPE_WEEKLY",
+                end: "2026-07-22T15:08:00Z",
+              },
+            },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      throw new Error(`unexpected url ${url}`);
+    }) as typeof fetch;
+
+    const snap = await fetchGrokBillingQuota("tok");
+    expect(String((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]![0])).toBe(
+      GROK_CREDITS_BILLING_URL,
+    );
+    expect(snap.periodType).toBe("weekly");
+    expect(snap.monthlyUsedPercent).toBe(50);
+    expect(snap.remainingPercent).toBe(50);
+  });
+
+  it("falls back to grpc-web when credits JSON fails", async () => {
     const resetEpoch = 1_800_000_000;
     const inner = concat(
       fixed32Field(1, 10),
@@ -140,7 +224,11 @@ describe("fetchGrokBillingQuota", () => {
     const body = grpcWebFrame(lengthDelimitedField(1, inner));
 
     globalThis.fetch = vi.fn(async (input, init) => {
-      expect(String(input)).toContain("GetGrokCreditsConfig");
+      const url = String(input);
+      if (url.includes("format=credits")) {
+        return new Response("nope", { status: 500 });
+      }
+      expect(url).toContain("GetGrokCreditsConfig");
       expect((init as RequestInit).method).toBe("POST");
       const headers = new Headers((init as RequestInit).headers);
       expect(headers.get("authorization")).toMatch(/^Bearer /);
@@ -154,5 +242,6 @@ describe("fetchGrokBillingQuota", () => {
     const snap = await fetchGrokBillingQuota("tok");
     expect(snap.monthlyUsedPercent).toBeCloseTo(10, 1);
     expect(snap.remainingPercent).toBe(90);
+    expect(snap.source).toBe("grpc");
   });
 });

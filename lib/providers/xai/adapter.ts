@@ -15,7 +15,7 @@ import {
   accountDisplayName,
   shortAccountId,
 } from "../../core/tui-status.js";
-import { formatUntil } from "../../core/format-time.js";
+import { formatBillingReset, formatUntil } from "../../core/format-time.js";
 import { getSessionOptions, sessionIdFromHeaders } from "../../core/session-options.js";
 import {
   DUMMY_API_KEY,
@@ -35,11 +35,16 @@ import {
 } from "./request/rate-limit.js";
 import { injectXaiReasoningBody } from "./request/body-bridge.js";
 import { resolveXaiMultiModels } from "./models-sync.js";
-import { fetchGrokBillingQuota } from "./request/billing-quota.js";
+import {
+  billingPeriodLabel,
+  fetchGrokBillingQuota,
+} from "./request/billing-quota.js";
 import {
   deriveRemainingFromPlanUsage,
   fetchGrokPlan,
   formatPlanLimit,
+  resolveXaiCreditResetsAtMs,
+  resolveXaiPlanResetsAtMs,
   resolveXaiRemainingPercent,
 } from "./request/plan.js";
 
@@ -115,6 +120,16 @@ async function recordXaiSuccess(ctx: RecordSuccessContext): Promise<void> {
   }
 }
 
+function periodTypeOf(account: Record<string, unknown>): string | undefined {
+  return typeof account.billingPeriodType === "string"
+    ? account.billingPeriodType
+    : undefined;
+}
+
+function asFiniteMs(v: unknown): number | undefined {
+  return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+}
+
 function listSubtitle(account: Record<string, unknown>, now: number): string {
   const name = accountDisplayName({
     accountId: String(account.accountId ?? ""),
@@ -137,10 +152,38 @@ function listSubtitle(account: Record<string, unknown>, now: number): string {
         ? account.planMonthlyLimit
         : undefined,
   });
-  if (rem !== undefined) {
+  const usedPct =
+    typeof account.billingMonthlyUsedPercent === "number"
+      ? account.billingMonthlyUsedPercent
+      : rem !== undefined
+        ? 100 - rem
+        : undefined;
+  if (usedPct !== undefined) {
+    const label = billingPeriodLabel(periodTypeOf(account));
+    parts.push(`${label} ${Math.floor(usedPct)}%`);
+  } else if (rem !== undefined) {
     parts.push(`${Math.round(rem)}% left`);
   }
+  const creditReset = resolveXaiCreditResetsAtMs({
+    billingResetsAt: asFiniteMs(account.billingResetsAt),
+    billingPeriodEndMs: asFiniteMs(account.billingPeriodEndMs),
+  });
+  const planReset = resolveXaiPlanResetsAtMs({
+    planPeriodEndMs: asFiniteMs(account.planPeriodEndMs),
+  });
+  if (creditReset !== undefined) {
+    parts.push(
+      `credits ${formatBillingReset(creditReset, now, {
+        periodType: periodTypeOf(account),
+      })}`,
+    );
+  }
+  if (planReset !== undefined && planReset !== creditReset) {
+    parts.push(`plan ${formatBillingReset(planReset, now)}`);
+  }
   if (
+    creditReset === undefined &&
+    planReset === undefined &&
     typeof account.quotaResetAt === "number" &&
     account.quotaResetAt > now
   ) {
@@ -159,6 +202,41 @@ function detailLines(account: Record<string, unknown>, now: number): string[] {
   if (typeof account.planName === "string" && account.planName) {
     lines.push(`plan: ${account.planName}`);
   }
+  const usedPct =
+    typeof account.billingMonthlyUsedPercent === "number"
+      ? account.billingMonthlyUsedPercent
+      : undefined;
+  const rem = resolveXaiRemainingPercent({
+    billingRemainingPercent:
+      typeof account.billingRemainingPercent === "number"
+        ? account.billingRemainingPercent
+        : undefined,
+    planUsed:
+      typeof account.planUsed === "number" ? account.planUsed : undefined,
+    planMonthlyLimit:
+      typeof account.planMonthlyLimit === "number"
+        ? account.planMonthlyLimit
+        : undefined,
+  });
+  if (usedPct !== undefined || rem !== undefined) {
+    const label = billingPeriodLabel(periodTypeOf(account));
+    const pct =
+      usedPct !== undefined
+        ? Math.floor(usedPct)
+        : Math.round(100 - (rem ?? 0));
+    lines.push(`${label}: ${pct}%`);
+  }
+  const creditReset = resolveXaiCreditResetsAtMs({
+    billingResetsAt: asFiniteMs(account.billingResetsAt),
+    billingPeriodEndMs: asFiniteMs(account.billingPeriodEndMs),
+  });
+  if (creditReset !== undefined) {
+    lines.push(
+      `Credits reset: ${formatBillingReset(creditReset, now, {
+        periodType: periodTypeOf(account),
+      })}`,
+    );
+  }
   if (
     typeof account.planUsed === "number" &&
     typeof account.planMonthlyLimit === "number" &&
@@ -175,20 +253,11 @@ function detailLines(account: Record<string, unknown>, now: number): string[] {
         (derived ? ` (${Math.round(derived.remainingPercent)}% left)` : ""),
     );
   }
-  const rem = resolveXaiRemainingPercent({
-    billingRemainingPercent:
-      typeof account.billingRemainingPercent === "number"
-        ? account.billingRemainingPercent
-        : undefined,
-    planUsed:
-      typeof account.planUsed === "number" ? account.planUsed : undefined,
-    planMonthlyLimit:
-      typeof account.planMonthlyLimit === "number"
-        ? account.planMonthlyLimit
-        : undefined,
+  const planReset = resolveXaiPlanResetsAtMs({
+    planPeriodEndMs: asFiniteMs(account.planPeriodEndMs),
   });
-  if (rem !== undefined) {
-    lines.push(`credits: ${Math.round(rem)}% remaining`);
+  if (planReset !== undefined) {
+    lines.push(`Plan reset: ${formatBillingReset(planReset, now)}`);
   }
   if (
     typeof account.rateLimitRemainingRequests === "number" ||

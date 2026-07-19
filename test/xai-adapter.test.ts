@@ -74,4 +74,49 @@ describe("xaiAdapter", () => {
     expect(PROVIDER_ID).toBe("xai-multi");
     expect(defaultModelsCachePath()).toMatch(/multi-ai-models-xai\.json$/);
   });
+
+  it("surfaces weekly limit + credits/plan reset like Grok Build", () => {
+    const now = Date.UTC(2026, 6, 19, 12, 0, 0);
+    const creditReset = now + 3 * 24 * 60 * 60 * 1000;
+    const planReset = now + 12 * 24 * 60 * 60 * 1000;
+    const account = {
+      accountId: "acc-heavy",
+      label: "Heavy",
+      planName: "SuperGrok Heavy",
+      planUsed: 94_000,
+      planMonthlyLimit: 150_000,
+      planPeriodEndMs: planReset,
+      billingRemainingPercent: 27,
+      billingMonthlyUsedPercent: 73,
+      billingPeriodType: "weekly",
+      billingResetsAt: creditReset,
+    };
+    const subtitle = xaiAdapter.listSubtitle?.(account, now) ?? "";
+    expect(subtitle).toMatch(/Weekly limit 73%/i);
+    expect(subtitle).toMatch(/credits /i);
+    expect(subtitle).toMatch(/plan /i);
+    const lines = xaiAdapter.detailLines?.(account, now) ?? [];
+    expect(lines.some((l) => /Weekly limit:\s*73%/i.test(l))).toBe(true);
+    expect(lines.some((l) => /^Credits reset:/i.test(l))).toBe(true);
+    expect(lines.some((l) => /^Plan reset:/i.test(l))).toBe(true);
+    expect(lines.some((l) => /allowance:/i.test(l))).toBe(true);
+  });
+
+  it("shows plan reset when only planPeriodEndMs is present", () => {
+    const now = Date.UTC(2026, 6, 19, 12, 0, 0);
+    const periodEnd = now + 5 * 24 * 60 * 60 * 1000;
+    const lines =
+      xaiAdapter.detailLines?.(
+        {
+          accountId: "acc-lite",
+          planName: "SuperGrok Lite",
+          planUsed: 10_000,
+          planMonthlyLimit: 15_000,
+          planPeriodEndMs: periodEnd,
+        },
+        now,
+      ) ?? [];
+    expect(lines.some((l) => /^Plan reset:/i.test(l))).toBe(true);
+    expect(lines.some((l) => /^Credits reset:/i.test(l))).toBe(false);
+  });
 });

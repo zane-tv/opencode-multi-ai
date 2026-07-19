@@ -5,7 +5,11 @@ import type {
   ProviderAccountView,
 } from "../core/accounts.js";
 import type { AccountMetadata, ProviderKind } from "../core/schemas.js";
-import { formatAge, formatUntil } from "../core/format-time.js";
+import {
+  formatAge,
+  formatBillingReset,
+  formatUntil,
+} from "../core/format-time.js";
 import { renderStatusLine } from "../core/tui-status.js";
 import { MAX_ACCOUNTS as XAI_MAX } from "../providers/xai/constants.js";
 import { MAX_ACCOUNTS as CODEX_MAX } from "../providers/codex/constants.js";
@@ -20,6 +24,8 @@ import {
   fetchGrokPlan,
   formatPlanLimit,
   planFromAccessToken,
+  resolveXaiCreditResetsAtMs,
+  resolveXaiPlanResetsAtMs,
 } from "../providers/xai/request/plan.js";
 import { fetchGrokUserProfile } from "../providers/xai/request/user-profile.js";
 import {
@@ -763,19 +769,51 @@ function buildXaiLimitsTool(view: ProviderAccountView): ToolDefinition {
             fresh.billingRemainingPercent ?? derived?.remainingPercent;
           const usedNum =
             fresh.billingMonthlyUsedPercent ?? derived?.monthlyUsedPercent;
-          if (rem !== undefined) {
-            const used = usedNum !== undefined ? usedNum.toFixed(1) : "?";
+          if (rem !== undefined || usedNum !== undefined) {
+            const periodLabel =
+              fresh.billingPeriodType === "weekly"
+                ? "Weekly limit"
+                : fresh.billingPeriodType === "monthly"
+                  ? "Monthly limit"
+                  : "Credits";
+            const used =
+              usedNum !== undefined
+                ? String(Math.floor(usedNum))
+                : rem !== undefined
+                  ? String(Math.round(100 - rem))
+                  : "?";
             lines.push(
-              `    credits:  ${rem}% remaining` + ` (used ${used}%)`,
+              `    ${periodLabel}: ${used}%` +
+                (rem !== undefined ? ` (${rem}% remaining)` : ""),
             );
-            if (typeof fresh.billingResetsAt === "number") {
+            {
+              const creditResetMs = resolveXaiCreditResetsAtMs(fresh);
+              if (creditResetMs !== undefined) {
+                lines.push(
+                  `    Credits reset: ${formatBillingReset(creditResetMs, now, {
+                    periodType: fresh.billingPeriodType,
+                  })}`,
+                );
+              }
+            }
+            if (
+              typeof fresh.planUsed === "number" &&
+              typeof fresh.planMonthlyLimit === "number"
+            ) {
               lines.push(
-                `    resets:   ${formatUntil(fresh.billingResetsAt, now)}`,
+                `    allowance: ${formatPlanLimit(fresh.planUsed)} / ${formatPlanLimit(fresh.planMonthlyLimit)}` +
+                  (derived
+                    ? ` (${Math.round(derived.remainingPercent)}% left)`
+                    : ""),
               );
-            } else if (typeof fresh.planPeriodEndMs === "number") {
-              lines.push(
-                `    resets:   ${formatUntil(fresh.planPeriodEndMs, now)}`,
-              );
+            }
+            {
+              const planResetMs = resolveXaiPlanResetsAtMs(fresh);
+              if (planResetMs !== undefined) {
+                lines.push(
+                  `    Plan reset: ${formatBillingReset(planResetMs, now)}`,
+                );
+              }
             }
             if (fresh.billingObservedAt || fresh.planObservedAt) {
               lines.push(

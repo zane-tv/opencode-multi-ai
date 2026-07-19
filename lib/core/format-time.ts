@@ -153,3 +153,27 @@ export function formatPeriodEnd(
   if (d.getHours() === 0 && d.getMinutes() === 0) return formatDate(ms, loc);
   return formatDateTime(ms, loc);
 }
+
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Credit period reset: future countdown, or weekly "ended · next +7d". */
+export function formatBillingReset(
+  ms: number | undefined | null,
+  now: number = Date.now(),
+  opts?: { periodType?: string },
+  loc?: Locale,
+): string {
+  if (ms === undefined || ms === null || !Number.isFinite(ms)) {
+    return t("empty");
+  }
+  if (ms > now) {
+    return formatUntil(ms, now, undefined, loc);
+  }
+  const abs = formatDateTime(ms, loc);
+  if (opts?.periodType === "weekly") {
+    let next = ms + WEEK_MS;
+    while (next <= now) next += WEEK_MS;
+    return `ended · next ${formatUntil(next, now, undefined, loc)}`;
+  }
+  return `ended · ${abs}`;
+}

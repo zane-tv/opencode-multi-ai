@@ -216,6 +216,28 @@ describe("createRotationFetch", () => {
     expect(manager.marks.touched).toEqual(["a0"]);
   });
 
+  it("propagates AbortError without rotating through sibling accounts", async () => {
+    // Given: a caller-cancelled request with multiple otherwise-ready accounts.
+    const adapter = makeAdapter();
+    const manager = makeManager([
+      { accountId: "a0" },
+      { accountId: "a1" },
+      { accountId: "a2" },
+    ]);
+    const abortError = Object.assign(new Error("aborted"), {
+      name: "AbortError",
+    });
+    fetchSpy.mockRejectedValue(abortError);
+    const custom = createRotationFetch(adapter, manager);
+
+    // When: the transport reports cancellation.
+    const request = custom(ENDPOINT, { method: "POST" });
+
+    // Then: cancellation propagates immediately instead of exhausting the pool.
+    await expect(request).rejects.toBe(abortError);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
   it("rotates on quota-exhausted and marks the account", async () => {
     vi.useFakeTimers();
     const adapter = makeAdapter();
@@ -253,6 +275,28 @@ describe("createRotationFetch", () => {
     expect(res.status).toBe(400);
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(manager.marks.touched).toEqual([]);
+  });
+
+  it("passes through context-overflow body so OpenCode can auto-compact", async () => {
+    const adapter = makeAdapter();
+    const manager = makeManager([
+      { accountId: "a0" },
+      { accountId: "a1" },
+    ]);
+    const upstream =
+      "This model's maximum prompt length is 500000 but the request contains 931795 tokens.";
+    fetchSpy.mockResolvedValue(
+      new Response(JSON.stringify({ error: upstream }), { status: 400 }),
+    );
+
+    const custom = createRotationFetch(adapter, manager);
+    const res = await custom(ENDPOINT, { method: "POST" });
+    expect(res.status).toBe(400);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(manager.marks.touched).toEqual([]);
+    const parsed = (await res.json()) as { error: string };
+    expect(parsed.error).toBe(upstream);
+    expect(parsed.error).toMatch(/maximum prompt length is \d+/i);
   });
 
   it("auth-recover: force refresh then succeed", async () => {

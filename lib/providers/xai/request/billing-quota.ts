@@ -1,20 +1,30 @@
 /**
- * SuperGrok / Grok Build monthly credits quota via grok.com gRPC-web.
- * Same endpoint as opgginc/opencode-bar GrokProvider:
- *   POST https://grok.com/grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig
+ * SuperGrok / Grok Build coding credits.
  *
- * Response is application/grpc-web+proto; we scan protobuf for:
- *   - monthly used % (fixed32, preferred path [1,1])
- *   - reset epoch seconds (varint, preferred path [1,5,1])
+ * Primary (Grok Build): GET cli-chat-proxy `/v1/billing?format=credits`
+ *   → creditUsagePercent, currentPeriod { type, start, end }
+ * Fallback: grok.com gRPC-web GetGrokCreditsConfig (protobuf scan).
  */
+
+export const GROK_CREDITS_BILLING_URL =
+  "https://cli-chat-proxy.grok.com/v1/billing?format=credits";
 
 export const GROK_BILLING_ENDPOINT =
   "https://grok.com/grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig";
 
+export type BillingPeriodType = "weekly" | "monthly" | "unknown";
+
 export type BillingQuotaSnapshot = {
+  /** Credit usage % for the active period (0–100+, Grok Build floor semantics). */
   monthlyUsedPercent: number;
   remainingPercent: number;
+  /** Epoch ms when the active period ends (next reset). */
   resetsAtMs?: number;
+  periodType?: BillingPeriodType;
+  periodStartMs?: number;
+  periodEndMs?: number;
+  isUnifiedBillingUser?: boolean;
+  source?: "credits-json" | "grpc";
   observedAt: number;
 };
 
@@ -111,9 +121,166 @@ function scanProtobuf(
   }
 }
 
+function numVal(v: unknown): number | undefined {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (v && typeof v === "object" && "val" in (v as object)) {
+    const n = Number((v as { val: unknown }).val);
+    return Number.isFinite(n) ? n : undefined;
+  }
+  if (typeof v === "string" && v.trim()) {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : undefined;
+  }
+  return undefined;
+}
+
+function parseIsoMs(v: unknown): number | undefined {
+  if (typeof v !== "string" || !v.trim()) return undefined;
+  const ms = Date.parse(v);
+  return Number.isFinite(ms) ? ms : undefined;
+}
+
+function coerceEpochMs(v: unknown): number | undefined {
+  if (typeof v === "number" && Number.isFinite(v)) {
+    if (v > 0 && v < 1e12) return v * 1000;
+    return v;
+  }
+  if (typeof v === "string" && v.trim()) {
+    const asNum = Number(v);
+    if (Number.isFinite(asNum)) return coerceEpochMs(asNum);
+    return parseIsoMs(v);
+  }
+  return undefined;
+}
+
+/** Map Grok Build proto enum / loose labels → weekly | monthly | unknown. */
+export function normalizeBillingPeriodType(
+  raw: unknown,
+): BillingPeriodType | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    // Observed proto: 1 monthly-ish, 2 weekly (Heavy live shape).
+    if (raw === 2) return "weekly";
+    if (raw === 1 || raw === 3) return "monthly";
+    return "unknown";
+  }
+  if (typeof raw !== "string" || !raw.trim()) return undefined;
+  const u = raw.toUpperCase();
+  if (u.includes("WEEKLY") || u === "WEEK" || u === "W") return "weekly";
+  if (u.includes("MONTHLY") || u === "MONTH" || u === "M") return "monthly";
+  return "unknown";
+}
+
+/** Grok Build credit_bar.usage_label equivalent. */
+export function billingPeriodLabel(
+  periodType: BillingPeriodType | string | undefined,
+): string {
+  const t =
+    typeof periodType === "string" &&
+    (periodType === "weekly" ||
+      periodType === "monthly" ||
+      periodType === "unknown")
+      ? periodType
+      : normalizeBillingPeriodType(periodType);
+  if (t === "weekly") return "Weekly limit";
+  if (t === "monthly") return "Monthly limit";
+  return "Credits";
+}
+
+function asRecord(v: unknown): Record<string, unknown> | undefined {
+  if (v && typeof v === "object" && !Array.isArray(v)) {
+    return v as Record<string, unknown>;
+  }
+  return undefined;
+}
+
 /**
- * Parse gRPC-web billing body (opencode-bar compatible).
+ * Parse Grok Build `GET …/billing?format=credits` JSON
+ * (BillingConfigResponse / nested config).
  */
+export function parseCreditsBillingJson(
+  json: unknown,
+  nowMs: number = Date.now(),
+): BillingQuotaSnapshot {
+  const root = asRecord(json) ?? {};
+  const config = asRecord(root.config) ?? root;
+
+  const usageRaw =
+    numVal(config.creditUsagePercent) ??
+    numVal(config.credit_usage_percent) ??
+    numVal(root.creditUsagePercent) ??
+    numVal(root.credit_usage_percent);
+
+  const period =
+    asRecord(config.currentPeriod) ??
+    asRecord(config.current_period) ??
+    asRecord(root.currentPeriod) ??
+    asRecord(root.current_period);
+
+  const periodType = normalizeBillingPeriodType(
+    period?.type ?? period?.periodType ?? period?.period_type,
+  );
+
+  const periodStartMs =
+    parseIsoMs(period?.start) ??
+    coerceEpochMs(period?.start) ??
+    parseIsoMs(config.billingPeriodStart) ??
+    parseIsoMs(config.billing_period_start);
+
+  const periodEndMs =
+    parseIsoMs(period?.end) ??
+    coerceEpochMs(period?.end) ??
+    parseIsoMs(config.billingPeriodEnd) ??
+    parseIsoMs(config.billing_period_end);
+
+  let monthlyUsedPercent = usageRaw;
+  if (monthlyUsedPercent === undefined) {
+    const limit =
+      numVal(config.monthlyLimit) ?? numVal(config.monthly_limit);
+    const used = numVal(config.used) ?? numVal(config.totalUsed);
+    if (
+      limit !== undefined &&
+      used !== undefined &&
+      Number.isFinite(limit) &&
+      limit > 0
+    ) {
+      monthlyUsedPercent = Math.min(999, Math.max(0, (used / limit) * 100));
+    }
+  }
+
+  if (monthlyUsedPercent === undefined) {
+    if (periodEndMs !== undefined) {
+      monthlyUsedPercent = 0;
+    } else {
+      throw new Error("credits billing JSON missing creditUsagePercent");
+    }
+  }
+
+  const used = Math.min(Math.max(monthlyUsedPercent, 0), 999);
+  const remainingPercent = Math.max(0, 100 - Math.round(used));
+
+  const unified =
+    typeof config.isUnifiedBillingUser === "boolean"
+      ? config.isUnifiedBillingUser
+      : typeof config.is_unified_billing_user === "boolean"
+        ? config.is_unified_billing_user
+        : typeof root.isUnifiedBillingUser === "boolean"
+          ? root.isUnifiedBillingUser
+          : undefined;
+
+  return {
+    monthlyUsedPercent: used,
+    remainingPercent,
+    resetsAtMs: periodEndMs,
+    periodType: periodType ?? (periodEndMs !== undefined ? "unknown" : undefined),
+    periodStartMs,
+    periodEndMs,
+    isUnifiedBillingUser: unified,
+    source: "credits-json",
+    observedAt: nowMs,
+  };
+}
+
 export function parseGrpcWebBillingResponse(
   data: Uint8Array,
   nowMs: number = Date.now(),
@@ -149,6 +316,11 @@ export function parseGrpcWebBillingResponse(
       .map((r) => r.dateMs)
       .sort((a, b) => a - b)[0];
 
+  const periodTypeVar = varints.find(
+    (f) => pathEq(f.path, [1, 8, 1]) || pathEq(f.path, [1, 8]),
+  );
+  const periodType = normalizeBillingPeriodType(periodTypeVar?.value);
+
   const hasCreditsShape = varints.some(
     (f) =>
       f.path.length >= 2 &&
@@ -174,14 +346,45 @@ export function parseGrpcWebBillingResponse(
     monthlyUsedPercent: used,
     remainingPercent,
     resetsAtMs,
+    periodType,
+    periodEndMs: resetsAtMs,
+    source: "grpc",
     observedAt: nowMs,
   };
 }
 
-export async function fetchGrokBillingQuota(
+async function fetchCreditsJsonBilling(
   accessToken: string,
 ): Promise<BillingQuotaSnapshot> {
-  // Empty gRPC-web frame: flags=0, length=0
+  const res = await fetch(GROK_CREDITS_BILLING_URL, {
+    method: "GET",
+    headers: {
+      authorization: `Bearer ${accessToken}`,
+      "x-xai-token-auth": "xai-grok-cli",
+      accept: "application/json",
+      "user-agent": "opencode-multi-ai",
+    },
+  });
+  const text = await res.text().catch(() => "");
+  if (!res.ok) {
+    throw new Error(
+      `credits billing HTTP ${res.status}${text ? `: ${text.slice(0, 120)}` : ""}`,
+    );
+  }
+  let json: unknown = {};
+  if (text.trim()) {
+    try {
+      json = JSON.parse(text);
+    } catch {
+      throw new Error(`credits billing non-JSON: ${text.slice(0, 80)}`);
+    }
+  }
+  return parseCreditsBillingJson(json);
+}
+
+async function fetchGrpcBilling(
+  accessToken: string,
+): Promise<BillingQuotaSnapshot> {
   const emptyFrame = new Uint8Array([0, 0, 0, 0, 0]);
   const res = await fetch(GROK_BILLING_ENDPOINT, {
     method: "POST",
@@ -220,4 +423,18 @@ export async function fetchGrokBillingQuota(
   }
 
   return parseGrpcWebBillingResponse(bytes);
+}
+
+/**
+ * Live credits probe. Prefer Grok Build JSON (`?format=credits`) for
+ * weekly/monthly period type; fall back to gRPC-web protobuf scan.
+ */
+export async function fetchGrokBillingQuota(
+  accessToken: string,
+): Promise<BillingQuotaSnapshot> {
+  try {
+    return await fetchCreditsJsonBilling(accessToken);
+  } catch {
+    return fetchGrpcBilling(accessToken);
+  }
 }

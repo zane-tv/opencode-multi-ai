@@ -46,7 +46,7 @@ export const RATE_LIMIT_RE = /rate limit exceeded|too many requests/i;
  * OAuth quota signals and are retained.
  */
 export const QUOTA_EXHAUSTED_RE =
-  /used all available credits|monthly spending limit|run out of credits|personal-team-blocked/i;
+  /used all available credits|monthly spending limit|spending-limit|run out of credits|personal-team-blocked|out of credits|need a grok subscription|add credits at/i;
 
 /**
  * Account not allowlisted for the OAuth API surface (xAI issue #26847).

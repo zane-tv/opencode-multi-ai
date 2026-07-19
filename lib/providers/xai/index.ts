@@ -90,7 +90,11 @@ export {
 export {
   fetchGrokBillingQuota,
   parseGrpcWebBillingResponse,
+  parseCreditsBillingJson,
+  billingPeriodLabel,
+  normalizeBillingPeriodType,
   type BillingQuotaSnapshot,
+  type BillingPeriodType,
 } from "./request/billing-quota.js";
 export { fetchGrokUserProfile, type GrokUserProfile } from "./request/user-profile.js";
 export { injectXaiReasoningBody } from "./request/body-bridge.js";

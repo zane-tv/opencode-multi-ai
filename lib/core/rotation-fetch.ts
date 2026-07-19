@@ -224,6 +224,7 @@ async function doRequest(
   try {
     res = await fetch(url, { ...init, headers });
   } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") throw err;
     return { classification: adapter.classifyThrownError(err), error: err };
   }
 
@@ -314,7 +315,9 @@ async function handleAttempt(
 
     case "unknown-client-error": {
       // Client/param error — return as-is; do NOT rotate (oracle B1).
-      if (attempt.res) return { action: "return", res: attempt.res };
+      if (attempt.res) {
+        return { action: "return", res: attempt.res };
+      }
       return {
         action: "throw",
         error:

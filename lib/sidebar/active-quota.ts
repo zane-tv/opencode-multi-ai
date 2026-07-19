@@ -6,17 +6,17 @@ import type {
   ProviderKind,
   XaiAccountMetadata,
 } from "../core/schemas.js";
-import { isSelectable } from "../core/accounts.js";
+import {
+  effectiveXaiRemainingPercent,
+  isRotationReady,
+  isSelectable,
+} from "../core/accounts.js";
 import { accountDisplayName } from "../core/tui-status.js";
 import {
   isWindowDisabled,
   leftPercent,
   windowLabel,
 } from "../providers/codex/request/usage.js";
-import {
-  formatPlanLimit,
-  resolveXaiRemainingPercent,
-} from "../providers/xai/request/plan.js";
 
 export type ActiveQuotaRow = {
   provider: ProviderKind;
@@ -101,8 +101,7 @@ export function isSidebarReady(
   }
 
   if (account.provider === "xai") {
-    const rem = resolveXaiRemainingPercent(account);
-    if (typeof rem === "number" && rem <= 0) return false;
+    if (!isRotationReady(account, now)) return false;
   }
 
   if (account.provider === "kiro") {
@@ -119,9 +118,9 @@ export function isSidebarReady(
   return true;
 }
 
-function remainingScore(account: AccountMetadata): number {
+function remainingScore(account: AccountMetadata, now: number = Date.now()): number {
   if (account.provider === "xai") {
-    return resolveXaiRemainingPercent(account) ?? -1;
+    return effectiveXaiRemainingPercent(account, now) ?? -1;
   }
   if (account.provider === "codex") {
     if (
@@ -178,8 +177,8 @@ export function findActiveAccount(
       if (candidate.lastUsed !== best.lastUsed) {
         return candidate.lastUsed > best.lastUsed ? candidate : best;
       }
-      const candRem = remainingScore(candidate);
-      const bestRem = remainingScore(best);
+      const candRem = remainingScore(candidate, now);
+      const bestRem = remainingScore(best, now);
       if (candRem !== bestRem) return candRem > bestRem ? candidate : best;
       return candidate.priority > best.priority ? candidate : best;
     });
@@ -199,23 +198,18 @@ export function findActiveAccount(
   );
 }
 
-function xaiRow(account: XaiAccountMetadata, sessionActive: boolean): ActiveQuotaRow {
-  const rem = resolveXaiRemainingPercent(account);
-  let detail: string | undefined;
-  if (
-    typeof account.planUsed === "number" &&
-    typeof account.planMonthlyLimit === "number" &&
-    account.planMonthlyLimit > 0
-  ) {
-    detail = `${formatPlanLimit(account.planUsed)} / ${formatPlanLimit(account.planMonthlyLimit)}`;
-  }
+function xaiRow(
+  account: XaiAccountMetadata,
+  sessionActive: boolean,
+  now: number = Date.now(),
+): ActiveQuotaRow {
+  const rem = effectiveXaiRemainingPercent(account, now);
   return {
     provider: "xai",
     providerLabel: "xAI",
     displayName: accountDisplayName(account),
     remainingPercent: rem,
     planLabel: account.planName,
-    detail,
     meter: meterBar(rem),
     accountId: account.accountId,
     sessionActive,
@@ -314,7 +308,7 @@ export function buildActiveQuotaRows(
         rows.push(codexRow(acc, sessionActive));
         break;
       case "xai":
-        rows.push(xaiRow(acc, sessionActive));
+        rows.push(xaiRow(acc, sessionActive, now));
         break;
       case "kiro":
         rows.push(kiroRow(acc, sessionActive));

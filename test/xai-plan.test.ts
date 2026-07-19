@@ -4,6 +4,8 @@ import {
   inferPlanNameFromLimit,
   planNameFromTier,
   formatPlanLimit,
+  resolveXaiCreditResetsAtMs,
+  resolveXaiPlanResetsAtMs,
   resolveXaiRemainingPercent,
 } from "../lib/providers/xai/request/plan.js";
 
@@ -36,19 +38,25 @@ describe("plan labels", () => {
     expect(deriveRemainingFromPlanUsage(undefined, 15000)).toBeUndefined();
   });
 
-  it("resolveXaiRemainingPercent prefers plan absolute over grpc %", () => {
+  it("resolveXaiRemainingPercent prefers Grok Build period % over plan absolute", () => {
     expect(
       resolveXaiRemainingPercent({
         planUsed: 61012,
         planMonthlyLimit: 150000,
         billingRemainingPercent: 12,
       }),
-    ).toBe(59);
+    ).toBe(12);
     expect(
       resolveXaiRemainingPercent({
         planUsed: 0,
         planMonthlyLimit: 150000,
         billingRemainingPercent: 59,
+      }),
+    ).toBe(59);
+    expect(
+      resolveXaiRemainingPercent({
+        planUsed: 0,
+        planMonthlyLimit: 150000,
       }),
     ).toBe(100);
     expect(
@@ -56,5 +64,22 @@ describe("plan labels", () => {
         billingRemainingPercent: 72,
       }),
     ).toBe(72);
+  });
+
+  it("splits credit period end from plan period end", () => {
+    expect(
+      resolveXaiCreditResetsAtMs({
+        billingResetsAt: 100,
+        billingPeriodEndMs: 200,
+      }),
+    ).toBe(100);
+    expect(
+      resolveXaiCreditResetsAtMs({
+        billingPeriodEndMs: 200,
+      }),
+    ).toBe(200);
+    expect(resolveXaiCreditResetsAtMs({})).toBeUndefined();
+    expect(resolveXaiPlanResetsAtMs({ planPeriodEndMs: 300 })).toBe(300);
+    expect(resolveXaiPlanResetsAtMs({})).toBeUndefined();
   });
 });

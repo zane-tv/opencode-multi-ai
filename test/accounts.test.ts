@@ -200,6 +200,127 @@ describe.each(PROVIDER_CASES)(
         expect(picked?.accountId).toBe("a1");
         expect(manager.sticky(provider)).toBe("a1");
       });
+
+      if (provider === "codex") {
+        it("skips Codex sticky when primary is 100% with no secondary window", async () => {
+          const resetAt = Date.now() + HOUR;
+          const full = makeAccount("codex", "full");
+          if (full.provider !== "codex") throw new Error("expected codex");
+          full.primaryUsedPercent = 100;
+          full.primaryWindowMinutes = 10080;
+          full.primaryResetAt = resetAt;
+          full.secondaryWindowMinutes = 0;
+          full.secondaryUsedPercent = 0;
+          const ok = makeAccount("codex", "ok", { priority: -1 });
+          if (ok.provider !== "codex") throw new Error("expected codex");
+          ok.primaryUsedPercent = 10;
+          await writeStore(storePath, [full, ok], stickyFor("codex", "full"));
+          const manager = new AccountManager(storePath);
+          await manager.load();
+
+          const picked = manager.selectAccount("codex", new Set());
+          expect(picked?.accountId).toBe("ok");
+          expect(manager.sticky("codex")).toBe("ok");
+        });
+
+        it("recordUsage marks primary-full as quota-exhausted and moves sticky", async () => {
+          const resetAt = Date.now() + HOUR;
+          const full = makeAccount("codex", "full", { priority: 5 });
+          if (full.provider !== "codex") throw new Error("expected codex");
+          full.primaryUsedPercent = 50;
+          const ok = makeAccount("codex", "ok", { priority: 0 });
+          if (ok.provider !== "codex") throw new Error("expected codex");
+          ok.primaryUsedPercent = 5;
+          await writeStore(storePath, [full, ok], stickyFor("codex", "full"));
+          const manager = new AccountManager(storePath);
+          await manager.load();
+
+          await manager.recordUsage("codex", "full", {
+            primaryUsedPercent: 100,
+            primaryWindowMinutes: 10080,
+            primaryResetAt: resetAt,
+            secondaryWindowMinutes: 0,
+            secondaryUsedPercent: 0,
+          });
+
+          const after = manager.get("codex", "full");
+          expect(after?.quotaResetAt).toBe(resetAt);
+          expect(after?.lastSwitchReason).toBe("quota-exhausted");
+          expect(manager.sticky("codex")).toBe("ok");
+          expect(
+            manager.selectAccount("codex", new Set())?.accountId,
+          ).toBe("ok");
+          expect(manager.list("codex")[0]?.accountId).toBe("ok");
+          expect(manager.get("codex", "full")?.priority).toBeLessThan(
+            manager.get("codex", "ok")?.priority ?? 0,
+          );
+        });
+      }
+
+      it("markQuotaExhausted demotes exhausted and promotes next sticky to #1", async () => {
+        const resetAt = Date.now() + HOUR;
+        const a = makeAccount(provider, "a", { priority: 10 });
+        const b = makeAccount(provider, "b", { priority: 5 });
+        const c = makeAccount(provider, "c", { priority: 1 });
+        await writeStore(storePath, [a, b, c], stickyFor(provider, "a"));
+        const manager = new AccountManager(storePath);
+        await manager.load();
+
+        await manager.markQuotaExhausted(provider, "a", resetAt);
+
+        expect(manager.sticky(provider)).toBe("b");
+        expect(manager.list(provider)[0]?.accountId).toBe("b");
+        expect(manager.get(provider, "a")?.quotaResetAt).toBe(resetAt);
+        const aPri = manager.get(provider, "a")?.priority ?? 0;
+        const bPri = manager.get(provider, "b")?.priority ?? 0;
+        expect(bPri).toBeGreaterThan(aPri);
+        const ids = manager.list(provider).map((x) => x.accountId);
+        expect(ids.indexOf("a")).toBeGreaterThan(ids.indexOf("b"));
+        expect(ids.indexOf("a")).toBeGreaterThan(ids.indexOf("c"));
+      });
+
+      it("keeps the next account active when an exhausted request finishes late", async () => {
+        // Given
+        const resetAt = Date.now() + HOUR;
+        const first = makeAccount(provider, "first", { priority: 10 });
+        const second = makeAccount(provider, "second", { priority: 5 });
+        const third = makeAccount(provider, "third", { priority: 1 });
+        await writeStore(
+          storePath,
+          [first, second, third],
+          stickyFor(provider, "first"),
+        );
+        const manager = new AccountManager(storePath);
+        await manager.load();
+
+        // When
+        await manager.markQuotaExhausted(provider, "first", resetAt);
+        await manager.touchLastUsed(provider, "first");
+
+        // Then
+        expect(manager.list(provider).map((account) => account.accountId)).toEqual([
+          "second",
+          "third",
+          "first",
+        ]);
+        expect(manager.sticky(provider)).toBe("second");
+      });
+
+      it("switchTo promotes sticky account to list head", async () => {
+        const a = makeAccount(provider, "a", { priority: 1 });
+        const b = makeAccount(provider, "b", { priority: 10 });
+        await writeStore(storePath, [a, b], stickyFor(provider, "b"));
+        const manager = new AccountManager(storePath);
+        await manager.load();
+
+        await manager.switchTo(provider, "a");
+
+        expect(manager.sticky(provider)).toBe("a");
+        expect(manager.list(provider)[0]?.accountId).toBe("a");
+        expect(manager.get(provider, "a")?.priority).toBeGreaterThan(
+          manager.get(provider, "b")?.priority ?? 0,
+        );
+      });
     });
 
     describe("add / remove", () => {
@@ -849,5 +970,43 @@ describe("getAccountManager singleton", () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+describe("xai closed credit period gates rotation", () => {
+  it("isRotationReady false when weekly period end is in the past", async () => {
+    const { isRotationReady, effectiveXaiRemainingPercent } = await import(
+      "../lib/core/accounts.js"
+    );
+    const now = Date.UTC(2026, 6, 19, 12, 0, 0);
+    const closed = {
+      provider: "xai" as const,
+      accountId: "a1",
+      refreshToken: "r",
+      enabled: true,
+      priority: 0,
+      addedAt: now,
+      lastUsed: 0,
+      lastSwitchReason: "initial" as const,
+      subscriptionStatus: "active" as const,
+      flaggedForRemoval: false,
+      entitlementBlocked: false,
+      tags: [],
+      billingRemainingPercent: 24,
+      billingMonthlyUsedPercent: 76,
+      billingPeriodType: "weekly" as const,
+      billingResetsAt: now - 60_000,
+      billingPeriodEndMs: now - 60_000,
+    };
+    expect(isRotationReady(closed, now)).toBe(false);
+    expect(effectiveXaiRemainingPercent(closed, now)).toBe(0);
+
+    const open = {
+      ...closed,
+      billingResetsAt: now + 86_400_000,
+      billingPeriodEndMs: now + 86_400_000,
+    };
+    expect(isRotationReady(open, now)).toBe(true);
+    expect(effectiveXaiRemainingPercent(open, now)).toBe(24);
   });
 });
