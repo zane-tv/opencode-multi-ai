@@ -229,29 +229,84 @@ export async function exchangeCode(args: {
   return parseTokenResponse(data);
 }
 
-function normalizedOAuthError(text: string): string | undefined {
+export function oauthErrorSignals(text: string): {
+  error?: string;
+  code?: string;
+} {
   try {
     const parsed: unknown = JSON.parse(text);
-    if (
-      typeof parsed !== "object" ||
-      parsed === null ||
-      Array.isArray(parsed) ||
-      !("error" in parsed)
-    ) {
-      return undefined;
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      return {};
     }
-    const error = parsed.error;
-    return typeof error === "string" ? error.trim().toLowerCase() : undefined;
+    const root = parsed as Record<string, unknown>;
+    const errField = root.error;
+    if (typeof errField === "string") {
+      return { error: errField.trim().toLowerCase() };
+    }
+    if (
+      typeof errField === "object" &&
+      errField !== null &&
+      !Array.isArray(errField)
+    ) {
+      const nested = errField as Record<string, unknown>;
+      const code =
+        typeof nested.code === "string"
+          ? nested.code.trim().toLowerCase()
+          : undefined;
+      const type =
+        typeof nested.type === "string"
+          ? nested.type.trim().toLowerCase()
+          : undefined;
+      return { error: type, code };
+    }
+    if (typeof root.code === "string") {
+      return { code: root.code.trim().toLowerCase() };
+    }
+    return {};
   } catch {
-    return undefined;
+    return {};
   }
+}
+
+function normalizedOAuthError(text: string): string | undefined {
+  const signals = oauthErrorSignals(text);
+  return signals.error ?? signals.code;
+}
+
+export function isDeadRefreshGrant(
+  status: number,
+  bodyText: string,
+): boolean {
+  if (status !== 400 && status !== 401) return false;
+  const { error, code } = oauthErrorSignals(bodyText);
+  if (error === "invalid_grant") return true;
+  if (
+    code === "invalid_grant" ||
+    code === "refresh_token_invalidated" ||
+    code === "session_ended" ||
+    code === "token_invalidated"
+  ) {
+    return true;
+  }
+  if (
+    /refresh_token_invalidated|session has ended|refresh token.*(invalid|revoked|expired)/i.test(
+      bodyText,
+    ) &&
+    (error === "invalid_request_error" ||
+      error === "invalid_request" ||
+      code !== undefined)
+  ) {
+    return true;
+  }
+  return false;
 }
 
 /**
  * Refresh tokens using a (possibly rotating) refresh token.
  *
  * - Returns `refresh_token ?? oldRefreshToken`.
- * - HTTP 400 invalid_grant → InvalidGrantError (caller may mark account dead).
+ * - HTTP 400/401 invalid_grant / refresh_token_invalidated → InvalidGrantError
+ *   (caller may mark account dead).
  * - Network / 5xx → TransientAuthError.
  */
 export async function refreshTokens(
@@ -294,10 +349,7 @@ export async function refreshTokens(
     );
   }
 
-  if (
-    res.status === 400 &&
-    normalizedOAuthError(text) === "invalid_grant"
-  ) {
+  if (isDeadRefreshGrant(res.status, text)) {
     throw new InvalidGrantError(
       "refresh token rejected (invalid_grant)",
       res.status,

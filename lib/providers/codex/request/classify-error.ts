@@ -477,6 +477,64 @@ function isUsageQuota(text: string, code: string | undefined): boolean {
   return false;
 }
 
+const OPAQUE_FORBIDDEN_RE =
+  /^(?:forbidden|access\s*denied|permission\s*denied)?$/i;
+
+function isOpaqueForbiddenBody(text: string, code: string | undefined): boolean {
+  const t = text.trim();
+  if (code && code.trim() !== "") return false;
+  return OPAQUE_FORBIDDEN_RE.test(t);
+}
+
+function isPrimaryWindowExhaustedFromHeaders(
+  headers: Headers | Record<string, string>,
+): boolean {
+  const primaryRaw = getHeader(headers, "x-codex-primary-used-percent");
+  if (primaryRaw === undefined || primaryRaw === "") return false;
+  const primary = Number(primaryRaw);
+  if (!Number.isFinite(primary) || primary < 100) return false;
+
+  const secondaryWinRaw = getHeader(
+    headers,
+    "x-codex-secondary-window-minutes",
+  );
+  const secondaryUsedRaw = getHeader(
+    headers,
+    "x-codex-secondary-used-percent",
+  );
+  const secondaryWin =
+    secondaryWinRaw !== undefined && secondaryWinRaw !== ""
+      ? Number(secondaryWinRaw)
+      : undefined;
+  const secondaryUsed =
+    secondaryUsedRaw !== undefined && secondaryUsedRaw !== ""
+      ? Number(secondaryUsedRaw)
+      : undefined;
+  const secondaryOpen =
+    typeof secondaryWin === "number" &&
+    Number.isFinite(secondaryWin) &&
+    secondaryWin > 0 &&
+    typeof secondaryUsed === "number" &&
+    Number.isFinite(secondaryUsed) &&
+    secondaryUsed < 100;
+  return !secondaryOpen;
+}
+
+function primaryResetAtFromHeaders(
+  headers: Headers | Record<string, string>,
+): number | undefined {
+  const after = getHeader(headers, "x-codex-primary-reset-after-seconds");
+  if (after !== undefined && after !== "") {
+    const d = parseDurationMs(after, "s");
+    if (d) return Date.now() + resolveDuration(d);
+  }
+  const at = getHeader(headers, "x-codex-primary-reset-at");
+  if (at !== undefined && at !== "") {
+    return coerceEpochMs(at);
+  }
+  return undefined;
+}
+
 /**
  * True when body/code indicates a pure rate limit (no usage_limit signal).
  */
@@ -549,6 +607,12 @@ export function classifyResponse(
     return withQuotaReset(headers, env.resetsAtMs);
   }
 
+  if (isPrimaryWindowExhaustedFromHeaders(headers)) {
+    const headerReset =
+      primaryResetAtFromHeaders(headers) ?? env.resetsAtMs;
+    return withQuotaReset(headers, headerReset);
+  }
+
   // Plain rate limit (body) or bare 429 → transient before entitlement/auth.
   if (status === 429 || isPlainRateLimit(text, code)) {
     return withRetryAfter("transient", headers);
@@ -562,6 +626,12 @@ export function classifyResponse(
   // A remaining bare 401 has no quota or entitlement signal.
   if (status === 401) {
     return { kind: "auth-dead" };
+  }
+
+  if (status === 403 && isOpaqueForbiddenBody(text, code)) {
+    const headerReset =
+      primaryResetAtFromHeaders(headers) ?? env.resetsAtMs;
+    return withQuotaReset(headers, headerReset);
   }
 
   // 404 with no usage/rate signal stays unknown-client (not a remapped 429).

@@ -434,6 +434,57 @@ describe("classifyResponse — server / overload", () => {
   });
 });
 
+describe("classifyResponse — opaque Forbidden / usage headers (rotate)", () => {
+  it("classifies bare 403 Forbidden as quota-exhausted", () => {
+    const c = classifyResponse(403, {}, "Forbidden");
+    expect(c.kind).toBe("quota-exhausted");
+  });
+
+  it("classifies empty 403 body as quota-exhausted", () => {
+    const c = classifyResponse(403, {}, "");
+    expect(c.kind).toBe("quota-exhausted");
+  });
+
+  it("classifies JSON message Forbidden without code as quota-exhausted", () => {
+    const c = classifyResponse(
+      403,
+      {},
+      JSON.stringify({ error: { message: "Forbidden" } }),
+    );
+    expect(c.kind).toBe("quota-exhausted");
+  });
+
+  it("classifies primary-used-percent 100 headers as quota-exhausted", () => {
+    const before = Date.now();
+    const c = classifyResponse(
+      403,
+      {
+        "x-codex-primary-used-percent": "100",
+        "x-codex-secondary-window-minutes": "0",
+        "x-codex-primary-reset-after-seconds": "90",
+      },
+      JSON.stringify({ error: { message: "something else" } }),
+    );
+    expect(c.kind).toBe("quota-exhausted");
+    if (c.kind === "quota-exhausted") {
+      expect(c.resetAtMs).toBeGreaterThanOrEqual(before + 90_000 - 1000);
+      expect(c.resetAtMs).toBeLessThanOrEqual(Date.now() + 90_000 + 1000);
+    }
+  });
+
+  it("does NOT treat entitlement 403 as opaque Forbidden", () => {
+    expect(classifyResponse(403, {}, FIXTURES.usageNotIncluded)).toEqual({
+      kind: "entitlement-blocked",
+    });
+  });
+
+  it("does NOT treat auth-dead 403 as opaque Forbidden", () => {
+    expect(classifyResponse(403, {}, FIXTURES.tokenRevokedCode)).toEqual({
+      kind: "auth-dead",
+    });
+  });
+});
+
 describe("classifyResponse — unknown client errors (no rotate)", () => {
   it("classifies param 400 as unknown-client-error", () => {
     expect(classifyResponse(400, {}, FIXTURES.param400)).toEqual({

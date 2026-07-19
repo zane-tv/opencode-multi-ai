@@ -78,6 +78,37 @@ describe("codexAdapter", () => {
     });
   });
 
+  it("listSubtitle and detailLines show plan label + window resets (not plan billing)", () => {
+    const now = 1_700_000_000_000;
+    const account = {
+      accountId: "acct-1",
+      email: "u@example.com",
+      planType: "plus",
+      primaryUsedPercent: 40,
+      primaryWindowMinutes: 300,
+      primaryResetAt: now + 3_600_000,
+      secondaryUsedPercent: 10,
+      secondaryWindowMinutes: 10_080,
+      secondaryResetAt: now + 86_400_000,
+      activeLimit: "primary",
+    };
+    const sub = codexAdapter.listSubtitle(account, now);
+    expect(sub).toMatch(/plus/);
+    expect(sub).toMatch(/60% left/);
+    expect(sub).toMatch(/resets /);
+    expect(sub).not.toMatch(/Plan reset/i);
+
+    const lines = codexAdapter.detailLines(account, now);
+    expect(lines.some((l) => l.startsWith("plan: plus"))).toBe(true);
+    expect(lines.some((l) => /^Plan reset/i.test(l))).toBe(false);
+    expect(lines.some((l) => l.startsWith("primary:") && l.includes("resets"))).toBe(
+      true,
+    );
+    expect(
+      lines.some((l) => l.startsWith("secondary:") && l.includes("resets")),
+    ).toBe(true);
+  });
+
   it("classifyResponse maps usage_limit and deactivated_workspace", async () => {
     const usage = await codexAdapter.classifyResponse(
       new Response("{}", { status: 429 }),

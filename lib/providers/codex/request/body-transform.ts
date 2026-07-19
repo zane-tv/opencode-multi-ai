@@ -24,6 +24,11 @@ export type CodexBodyTransformOptions = {
   /** Maps to body.text.verbosity when provided. */
   textVerbosity?: string;
   /**
+   * ChatGPT Codex Fast mode — maps to body.service_tier ("fast" | "default").
+   * Built-in Codex `/fast` uses service_tier=fast (higher credit burn).
+   */
+  serviceTier?: string;
+  /**
    * When true (default), strip `provider/` prefix and apply CODEX_MODEL_NORMALIZE.
    * Pass false to leave `model` untouched.
    */
@@ -154,6 +159,11 @@ export function transformCodexBody(
     "service_tier",
   ] as const) {
     if (key in out) delete out[key];
+  }
+
+  const tier = options?.serviceTier?.trim().toLowerCase();
+  if (tier === "fast") {
+    out.service_tier = "fast";
   }
 
   if (options?.normalizeModel !== false && typeof out.model === "string") {

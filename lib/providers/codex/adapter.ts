@@ -44,28 +44,29 @@ import {
   CODEX_PROVIDER_DEFAULT_OPTIONS,
   resolveCodexMultiModels,
 } from "./models-sync.js";
+import { getCodexFastMode } from "../../core/codex-fast-mode.js";
+import type { CodexBodyTransformOptions } from "./request/body-transform.js";
 
 function sessionOptionsToBody(
   sessionOptions: Record<string, unknown> | undefined,
-): {
-  reasoningEffort?: string;
-  reasoningSummary?: string;
-  textVerbosity?: string;
-} {
-  if (!sessionOptions) return {};
-  const out: {
-    reasoningEffort?: string;
-    reasoningSummary?: string;
-    textVerbosity?: string;
-  } = {};
-  if (typeof sessionOptions.reasoningEffort === "string") {
-    out.reasoningEffort = sessionOptions.reasoningEffort;
+): CodexBodyTransformOptions {
+  const out: CodexBodyTransformOptions = {};
+  if (sessionOptions) {
+    if (typeof sessionOptions.reasoningEffort === "string") {
+      out.reasoningEffort = sessionOptions.reasoningEffort;
+    }
+    if (typeof sessionOptions.reasoningSummary === "string") {
+      out.reasoningSummary = sessionOptions.reasoningSummary;
+    }
+    if (typeof sessionOptions.textVerbosity === "string") {
+      out.textVerbosity = sessionOptions.textVerbosity;
+    }
+    if (typeof sessionOptions.serviceTier === "string") {
+      out.serviceTier = sessionOptions.serviceTier;
+    }
   }
-  if (typeof sessionOptions.reasoningSummary === "string") {
-    out.reasoningSummary = sessionOptions.reasoningSummary;
-  }
-  if (typeof sessionOptions.textVerbosity === "string") {
-    out.textVerbosity = sessionOptions.textVerbosity;
+  if (getCodexFastMode()) {
+    out.serviceTier = "fast";
   }
   return out;
 }

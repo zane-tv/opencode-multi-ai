@@ -28,6 +28,18 @@ async function captureRefreshError(body: string): Promise<unknown> {
   throw new Error("expected token refresh to reject");
 }
 
+function stubRefreshStatus(status: number, body: string): void {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () =>
+      new Response(body, {
+        status,
+        headers: { "content-type": "application/json" },
+      }),
+    ),
+  );
+}
+
 describe("refreshTokens — invalid_grant detection", () => {
   it("throws InvalidGrantError for an exact OAuth invalid_grant code", async () => {
     const error = await captureRefreshError(
@@ -37,6 +49,27 @@ describe("refreshTokens — invalid_grant detection", () => {
       }),
     );
 
+    expect(error).toBeInstanceOf(InvalidGrantError);
+  });
+
+  it("throws InvalidGrantError for nested OpenAI refresh_token_invalidated (HTTP 401)", async () => {
+    stubRefreshStatus(
+      401,
+      JSON.stringify({
+        error: {
+          message: "Your session has ended. Please log in again.",
+          type: "invalid_request_error",
+          param: null,
+          code: "refresh_token_invalidated",
+        },
+      }),
+    );
+    let error: unknown;
+    try {
+      await refreshTokens("refresh-token");
+    } catch (e) {
+      error = e;
+    }
     expect(error).toBeInstanceOf(InvalidGrantError);
   });
 
