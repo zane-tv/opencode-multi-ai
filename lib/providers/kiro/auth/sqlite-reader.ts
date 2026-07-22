@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { pathToFileURL } from "node:url";
 
 export type SqliteRow = Record<string, unknown>;
 
@@ -7,16 +8,23 @@ export type SqliteQueryResult = {
   rows: SqliteRow[];
 };
 
+export function sqliteValueToString(value: unknown): string | undefined {
+  if (typeof value === "string") return value;
+  if (value instanceof ArrayBuffer) return Buffer.from(value).toString("utf8");
+  if (Buffer.isBuffer(value) || value instanceof Uint8Array) {
+    return Buffer.from(value).toString("utf8");
+  }
+  return undefined;
+}
+
 export async function readSqliteQuery(
   dbPath: string,
   sql: string,
   params: readonly unknown[] = [],
 ): Promise<SqliteQueryResult> {
   await fs.access(dbPath);
-  type DatabaseCtor = new (
-    path: string,
-    opts?: { readonly?: boolean },
-  ) => {
+  type DatabaseCtor = new (path: string) => {
+    exec: (sql: string) => unknown;
     prepare: (sql: string) => {
       all: (...args: unknown[]) => unknown[];
       columns?: () => Array<{ name: string }>;
@@ -42,8 +50,11 @@ export async function readSqliteQuery(
     throw new Error("libsql Database export not found");
   }
 
-  const db = new Database(dbPath, { readonly: true });
+  const dbUri = pathToFileURL(dbPath);
+  dbUri.searchParams.set("mode", "ro");
+  const db = new Database(dbUri.href);
   try {
+    db.exec("PRAGMA query_only = ON");
     const stmt = db.prepare(sql);
     const rowsRaw = stmt.all(...params);
     const columns =

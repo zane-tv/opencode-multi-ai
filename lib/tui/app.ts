@@ -1596,14 +1596,28 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
     return ADAPTERS[activeTab];
   }
 
+  // OpenTUI throws "TextBuffer is destroyed" after renderer.destroy (quit during OAuth).
+  function safeSetContent(
+    node: TextRenderable,
+    value: string | StyledText,
+  ): void {
+    if (!alive) return;
+    try {
+      node.content = value;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("destroyed")) return;
+      throw err;
+    }
+  }
+
   function setStatus(next: SemanticStatus | undefined): void {
     semanticStatus = next;
     if (!alive) return;
-    try {
-      statusText.content = styledHints(semanticStatus, liveEnabled, liveBusy);
-    } catch {
-      void 0;
-    }
+    safeSetContent(
+      statusText,
+      styledHints(semanticStatus, liveEnabled, liveBusy),
+    );
   }
 
   function orderedAccounts(): AccountMetadata[] {
@@ -1725,17 +1739,21 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
   }
 
   function paintDetail(): void {
+    if (!alive) return;
     if (helpVisible) {
-      detailText.content = styledHelp(activeTab, getLocale());
+      safeSetContent(detailText, styledHelp(activeTab, getLocale()));
       return;
     }
     const acc = selectedAccount();
-    detailText.content = styledDetail(
-      acc,
-      adapter(),
-      Date.now(),
-      activeTab,
-      view().sticky(),
+    safeSetContent(
+      detailText,
+      styledDetail(
+        acc,
+        adapter(),
+        Date.now(),
+        activeTab,
+        view().sticky(),
+      ),
     );
   }
 
@@ -1756,17 +1774,18 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
       const hue = providerHue(activeTab);
 
       applyProviderChrome(activeTab);
-      brandText.content = styledBrand();
-      tabText.content = styledTabBar(activeTab);
+      safeSetContent(brandText, styledBrand());
+      safeSetContent(tabText, styledTabBar(activeTab));
       void renderTabBar(activeTab);
-      headerText.content = styledHeader(
-        accounts,
-        stickyIndex(v),
-        now,
-        activeTab,
+      safeSetContent(
+        headerText,
+        styledHeader(accounts, stickyIndex(v), now, activeTab),
       );
-      statusText.content = styledHints(semanticStatus, liveEnabled, liveBusy);
-      footer.content = styledFooter();
+      safeSetContent(
+        statusText,
+        styledHints(semanticStatus, liveEnabled, liveBusy),
+      );
+      safeSetContent(footer, styledFooter());
 
       accountSelect.options = accountOptions(v, adapter(), now);
       accountSelect.selectedBackgroundColor = parseColor(hue.selectedBg);
@@ -2058,7 +2077,10 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
                 text: `${prompt.verificationUri}  code ${prompt.userCode}`,
                 tone: "info",
               });
-              detailText.content = t`${bold(fg(T.kiroBright)("Kiro IDC + ARN"))}${fg(T.text)("\n\n")}${fg(T.label)("URL   ")}${fg(T.value)(prompt.verificationUri)}${fg(T.text)("\n")}${fg(T.label)("Code  ")}${bold(fg(T.ready)(prompt.userCode))}${fg(T.text)("\n\n")}${fg(T.textDim)("Esc cancels")}`;
+              safeSetContent(
+                detailText,
+                t`${bold(fg(T.kiroBright)("Kiro IDC + ARN"))}${fg(T.text)("\n\n")}${fg(T.label)("URL   ")}${fg(T.value)(prompt.verificationUri)}${fg(T.text)("\n")}${fg(T.label)("Code  ")}${bold(fg(T.ready)(prompt.userCode))}${fg(T.text)("\n\n")}${fg(T.textDim)("Esc cancels")}`,
+              );
             },
           );
           await finishKiroAccount(account);
@@ -2073,7 +2095,7 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
               : `add failed: ${(err as Error).message}`,
             tone: cancelled ? "warn" : "err",
           });
-          if (activeTab === "kiro") paintDetail();
+          if (alive && activeTab === "kiro") paintDetail();
         } finally {
           if (addAbort === controller) addAbort = null;
           busy = false;
@@ -3049,7 +3071,10 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
             tone: "info",
           });
         }
-        statusText.content = styledHints(semanticStatus, liveEnabled, liveBusy);
+        safeSetContent(
+          statusText,
+          styledHints(semanticStatus, liveEnabled, liveBusy),
+        );
         return;
       }
       case "reload": {
@@ -3172,11 +3197,17 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
           text: `${prompt.verificationUri}  code ${prompt.userCode}`,
           tone: "info",
         });
-        detailText.content = t`${bold(fg(hue)("Device login"))}${fg(T.text)("\n\n")}${fg(T.label)("URL   ")}${fg(T.value)(prompt.verificationUri)}${fg(T.text)("\n")}${fg(T.label)("Code  ")}${bold(fg(T.ready)(prompt.userCode))}${fg(T.text)("\n\n")}${fg(T.textDim)("Esc cancels")}`;
+        safeSetContent(
+          detailText,
+          t`${bold(fg(hue)("Device login"))}${fg(T.text)("\n\n")}${fg(T.label)("URL   ")}${fg(T.value)(prompt.verificationUri)}${fg(T.text)("\n")}${fg(T.label)("Code  ")}${bold(fg(T.ready)(prompt.userCode))}${fg(T.text)("\n\n")}${fg(T.textDim)("Esc cancels")}`,
+        );
       };
       const paintBrowser = (hue: string, url: string) => {
         setStatus({ text: url, tone: "info" });
-        detailText.content = t`${bold(fg(hue)("Browser login"))}${fg(T.text)("\n\n")}${fg(T.label)("URL   ")}${fg(T.value)(url)}${fg(T.text)("\n\n")}${fg(T.textDim)("Esc cancels")}`;
+        safeSetContent(
+          detailText,
+          t`${bold(fg(hue)("Browser login"))}${fg(T.text)("\n\n")}${fg(T.label)("URL   ")}${fg(T.value)(url)}${fg(T.text)("\n\n")}${fg(T.textDim)("Esc cancels")}`,
+        );
       };
 
       if (tab === "xai") {
@@ -3282,7 +3313,7 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
           tone: "err",
         });
       }
-      if (tab === activeTab) paintDetail();
+      if (alive && tab === activeTab) paintDetail();
     } finally {
       if (addAbort === controller) addAbort = null;
       busy = false;
@@ -3299,7 +3330,10 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
     if (!acc) return;
 
     liveBusy = true;
-    statusText.content = styledHints(semanticStatus, liveEnabled, liveBusy);
+    safeSetContent(
+      statusText,
+      styledHints(semanticStatus, liveEnabled, liveBusy),
+    );
     try {
       await probeAndRecord(tab, v, acc);
       if (isStaleResult(gens, tab, started) || !alive) return;
@@ -3309,7 +3343,10 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
     } finally {
       liveBusy = false;
       if (alive) {
-        statusText.content = styledHints(semanticStatus, liveEnabled, liveBusy);
+        safeSetContent(
+          statusText,
+          styledHints(semanticStatus, liveEnabled, liveBusy),
+        );
       }
     }
   }

@@ -1005,6 +1005,107 @@ const hasOpenTuiFfi = typeof (globalThis as { Bun?: unknown }).Bun !== "undefine
     harness = null;
   });
 
+  it("quit mid-device-login does not throw TextBuffer is destroyed", async () => {
+    const uncaught: unknown[] = [];
+    const onUncaught = (err: unknown) => {
+      uncaught.push(err);
+    };
+    process.on("uncaughtException", onUncaught);
+    process.on("unhandledRejection", onUncaught);
+    try {
+      harness = await launchTui({ storePath, settingsPath });
+      const { setup, done } = harness;
+      const s = setup();
+      let promptSeen = false;
+      deviceLoginXai.mockImplementation(
+        async (
+          _v: unknown,
+          onPrompt?: (p: {
+            verificationUri: string;
+            userCode: string;
+          }) => void,
+          signal?: AbortSignal,
+        ) => {
+          onPrompt?.({
+            verificationUri: "https://x.ai/device",
+            userCode: "ZZZZ-9999",
+          });
+          promptSeen = true;
+          await new Promise<void>((_resolve, reject) => {
+            signal?.addEventListener(
+              "abort",
+              () =>
+                reject(
+                  Object.assign(new Error("login cancelled"), {
+                    name: "LoginCancelledError",
+                  }),
+                ),
+              { once: true },
+            );
+          });
+          return { accountId: "x", outcome: "added" as const };
+        },
+      );
+      s.mockInput.pressKey("a");
+      await s.renderOnce();
+      await new Promise((r) => setTimeout(r, 80));
+      expect(promptSeen).toBe(true);
+      s.mockInput.pressKey("q");
+      await Promise.race([done, new Promise((r) => setTimeout(r, 2000))]);
+      await new Promise((r) => setTimeout(r, 150));
+      harness = null;
+      const destroyed = uncaught.filter((e) =>
+        String(e instanceof Error ? e.message : e).includes("destroyed"),
+      );
+      expect(destroyed).toEqual([]);
+    } finally {
+      process.off("uncaughtException", onUncaught);
+      process.off("unhandledRejection", onUncaught);
+    }
+  });
+
+  it("empty pool launch + failed device add paints detail without crash", async () => {
+    await saveAccounts(
+      {
+        version: 3,
+        accounts: [],
+        sticky: {},
+      },
+      storePath,
+    );
+    harness = await launchTui({ storePath, settingsPath });
+    const { setup } = harness;
+    const s = setup();
+    await s.renderOnce();
+    const emptyFrame = frameOf(s);
+    expect(emptyFrame.toLowerCase()).toMatch(
+      /empty|pool|no account|chưa|trống|add/i,
+    );
+
+    deviceLoginXai.mockImplementation(
+      async (
+        _v: unknown,
+        onPrompt?: (p: {
+          verificationUri: string;
+          userCode: string;
+        }) => void,
+      ) => {
+        onPrompt?.({
+          verificationUri: "https://x.ai/device",
+          userCode: "FAIL-0001",
+        });
+        throw new Error("oauth denied");
+      },
+    );
+    s.mockInput.pressKey("a");
+    await s.renderOnce();
+    await new Promise((r) => setTimeout(r, 120));
+    const after = frameOf(s);
+    expect(after.toLowerCase()).toMatch(
+      /fail|denied|error|oauth|empty|pool|add/i,
+    );
+  });
+
   it("action pane shows main menu categories EN and VI after g", async () => {
     harness = await launchTui({ storePath, settingsPath });
     const s = harness.setup();
