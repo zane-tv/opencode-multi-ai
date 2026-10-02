@@ -31,7 +31,11 @@ async function tempCachePath(): Promise<string> {
 }
 
 describe("DEFAULT_MODELS seed (constants)", () => {
-  it("includes gpt-5-codex, gpt-5.1-codex, gpt-5.5", () => {
+  it("includes gpt-6-astra, gpt-5-codex, gpt-5.1-codex, gpt-5.5", () => {
+    expect(DEFAULT_MODELS["gpt-6-astra"]).toBeTruthy();
+    expect(DEFAULT_MODELS["gpt-6-astra"].name).toBe("GPT-6 Astra");
+    expect(DEFAULT_MODELS["gpt-6-astra"].reasoning).toBe(true);
+    expect(DEFAULT_MODELS["gpt-6-astra"].limit?.context).toBe(1_050_000);
     expect(DEFAULT_MODELS["gpt-5-codex"]).toBeTruthy();
     expect(DEFAULT_MODELS["gpt-5.1-codex"]).toBeTruthy();
     expect(DEFAULT_MODELS["gpt-5.5"]).toBeTruthy();

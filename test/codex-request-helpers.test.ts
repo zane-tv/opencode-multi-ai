@@ -5,11 +5,9 @@ import { createCodexHeaders } from "../lib/providers/codex/request/codex-headers
 import {
   CODEX_INCLUDE_ENCRYPTED_REASONING,
   forceEffortInBody,
-  isServiceTierRejected,
   isUltraEffortRejected,
   normalizeCodexEffort,
   normalizeCodexModel,
-  stripServiceTierFromBody,
   transformCodexBody,
   transformCodexRequestInit,
 } from "../lib/providers/codex/request/body-transform.js";
@@ -159,11 +157,19 @@ describe("transformCodexBody", () => {
     expect(out.text).toEqual({ verbosity: "medium" });
   });
 
-  it("keeps max on 5.6; maps ultra→max; clamps max→xhigh on 5.5", () => {
+  it("keeps max on 5.6 and 6; maps ultra→max; clamps max→xhigh on 5.5", () => {
+    expect(normalizeCodexEffort("max", "gpt-6-astra")).toBe("max");
+    expect(normalizeCodexEffort("ultra", "gpt-6-astra")).toBe("max");
     expect(normalizeCodexEffort("max", "gpt-5.6-sol")).toBe("max");
     expect(normalizeCodexEffort("ultra", "gpt-5.6-sol")).toBe("max");
     expect(normalizeCodexEffort("max", "gpt-5.5")).toBe("xhigh");
     expect(normalizeCodexEffort("ultra", "gpt-5.5")).toBe("xhigh");
+    expect(
+      transformCodexBody(
+        { model: "gpt-6-astra" },
+        { reasoningEffort: "ultra" },
+      ).reasoning,
+    ).toEqual({ effort: "max" });
     expect(
       transformCodexBody(
         { model: "gpt-5.6-sol" },
@@ -214,7 +220,7 @@ describe("transformCodexBody", () => {
     );
   });
 
-  it("DEFAULT_MODELS: 5.6 family has max; never ultra", () => {
+  it("DEFAULT_MODELS: 5.6 and 6 families have max; never ultra", () => {
     for (const [id, meta] of Object.entries(DEFAULT_MODELS)) {
       const variants = meta.variants ?? {};
       for (const [vk, vv] of Object.entries(variants)) {
@@ -222,7 +228,10 @@ describe("transformCodexBody", () => {
         if (vv && typeof vv === "object" && "reasoningEffort" in vv) {
           const effort = (vv as { reasoningEffort: string }).reasoningEffort;
           expect(effort).not.toBe("ultra");
-          const is56 = id.startsWith("gpt-5.6-");
+          const hasMax =
+            id.startsWith("gpt-5.6-") ||
+            id.startsWith("gpt-6") ||
+            id === "gpt-reserve";
           const allowed = [
             "none",
             "minimal",
@@ -230,13 +239,18 @@ describe("transformCodexBody", () => {
             "medium",
             "high",
             "xhigh",
-            ...(is56 ? (["max"] as const) : []),
+            ...(hasMax ? (["max"] as const) : []),
           ];
           expect(allowed).toContain(effort);
         }
       }
     }
-    for (const id of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] as const) {
+    for (const id of [
+      "gpt-6-astra",
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+      "gpt-5.6-luna",
+    ] as const) {
       expect(DEFAULT_MODELS[id]?.variants).toMatchObject({
         max: { reasoningEffort: "max" },
         xhigh: { reasoningEffort: "xhigh" },
@@ -290,51 +304,5 @@ describe("transformCodexRequestInit", () => {
   it("leaves non-json bodies untouched", () => {
     const init = { body: "not-json" };
     expect(transformCodexRequestInit(init)).toBe(init);
-  });
-});
-
-describe("isServiceTierRejected / stripServiceTierFromBody", () => {
-  const rejectBody = JSON.stringify({
-    detail: "Unsupported service_tier: fast",
-  });
-
-  it("detects the unsupported service_tier 400", () => {
-    expect(isServiceTierRejected(400, rejectBody)).toBe(true);
-    expect(isServiceTierRejected(400, "unsupported service_tier: fast")).toBe(
-      true,
-    );
-    expect(isServiceTierRejected(400, "service_tier not supported")).toBe(true);
-    expect(isServiceTierRejected(400, "invalid service_tier value")).toBe(true);
-  });
-
-  it("ignores other 400s and non-400 statuses", () => {
-    expect(isServiceTierRejected(400, "Unsupported parameter: agents")).toBe(
-      false,
-    );
-    expect(isServiceTierRejected(400, undefined)).toBe(false);
-    expect(isServiceTierRejected(403, rejectBody)).toBe(false);
-    expect(isServiceTierRejected(200, rejectBody)).toBe(false);
-  });
-
-  it("strips service_tier from a JSON body", () => {
-    const body = JSON.stringify({
-      model: "gpt-5.6-sol",
-      service_tier: "fast",
-      reasoning: { effort: "high" },
-    });
-    const next = stripServiceTierFromBody(body);
-    expect(next).not.toBeNull();
-    const parsed = JSON.parse(next!) as Record<string, unknown>;
-    expect(parsed).not.toHaveProperty("service_tier");
-    expect(parsed.model).toBe("gpt-5.6-sol");
-    expect(parsed.reasoning).toEqual({ effort: "high" });
-  });
-
-  it("returns null when nothing to strip or body is not JSON", () => {
-    expect(
-      stripServiceTierFromBody(JSON.stringify({ model: "gpt-5.6-sol" })),
-    ).toBeNull();
-    expect(stripServiceTierFromBody("not-json")).toBeNull();
-    expect(stripServiceTierFromBody("")).toBeNull();
   });
 });

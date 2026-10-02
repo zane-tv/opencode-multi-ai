@@ -18,7 +18,17 @@ import {
   withCrossProcessTransaction,
 } from "./storage.js";
 
-const MAX_ACCOUNTS_PER_PROVIDER = 20;
+export const MAX_ACCOUNTS_PER_PROVIDER = 20;
+
+export function getMaxAccountsPerProvider(provider?: ProviderKind): number {
+  if (provider === "antigravity") {
+    const envVal = Number(process.env.MULTI_AI_ANTIGRAVITY_MAX_ACCOUNTS);
+    return Number.isFinite(envVal) && envVal > 0 ? envVal : 50;
+  }
+  const envVal = Number(process.env.MULTI_AI_MAX_ACCOUNTS);
+  return Number.isFinite(envVal) && envVal > 0 ? envVal : 20;
+}
+
 const TOKEN_REFRESH_SKEW_MS = 60_000;
 
 type Tokens = {
@@ -78,6 +88,14 @@ export function createDefaultRefreshHandlers(): RefreshDrivers {
           "../providers/kiro/auth/refresh.js"
         );
         return refreshKiroAccount(account);
+      },
+    },
+    antigravity: {
+      refresh: async (account) => {
+        const { refreshAntigravityAccount } = await import(
+          "../providers/antigravity/auth/refresh.js"
+        );
+        return refreshAntigravityAccount(account);
       },
     },
     // Static API key: no OAuth refresh. Passthrough returns the stored key
@@ -307,15 +325,25 @@ export function isRotationReady(
   if (!isSelectable(account, now)) return false;
 
   if (account.provider === "codex") {
+    const primaryResetPending =
+      typeof account.primaryResetAt === "number" &&
+      account.primaryResetAt > now;
     const primaryFull =
       typeof account.primaryUsedPercent === "number" &&
-      account.primaryUsedPercent >= 100;
+      account.primaryUsedPercent >= 100 &&
+      (primaryResetPending || typeof account.primaryResetAt !== "number");
     if (primaryFull) {
+      const secondaryResetPending =
+        typeof account.secondaryResetAt === "number" &&
+        account.secondaryResetAt > now;
+      const secondaryFull =
+        typeof account.secondaryUsedPercent === "number" &&
+        account.secondaryUsedPercent >= 100 &&
+        (secondaryResetPending || typeof account.secondaryResetAt !== "number");
       const secondaryOpen =
         typeof account.secondaryWindowMinutes === "number" &&
         account.secondaryWindowMinutes > 0 &&
-        typeof account.secondaryUsedPercent === "number" &&
-        account.secondaryUsedPercent < 100;
+        !secondaryFull;
       if (!secondaryOpen) return false;
     }
   }
@@ -630,6 +658,17 @@ function mergeOAuthAccount(
     if (incoming.usageObservedAt !== undefined) {
       current.usageObservedAt = incoming.usageObservedAt;
     }
+    return;
+  }
+
+  if (current.provider === "antigravity" && incoming.provider === "antigravity") {
+    if (incoming.projectId !== undefined) current.projectId = incoming.projectId;
+    if (incoming.tier !== undefined) current.tier = incoming.tier;
+    if (incoming.accountType !== undefined) current.accountType = incoming.accountType;
+    if (incoming.usageObservedAt !== undefined) {
+      current.usageObservedAt = incoming.usageObservedAt;
+    }
+    return;
   }
 }
 
@@ -653,6 +692,9 @@ export class AccountManager {
     }
     if (refresh.kiro !== undefined) {
       drivers.kiro = toRefreshDriver<"kiro">(refresh.kiro);
+    }
+    if (refresh.antigravity !== undefined) {
+      drivers.antigravity = toRefreshDriver<"antigravity">(refresh.antigravity);
     }
     if (refresh["opencode-go"] !== undefined) {
       drivers["opencode-go"] = toRefreshDriver<"opencode-go">(
@@ -802,13 +844,14 @@ export class AccountManager {
           `account ${identityKey(account.provider, account.accountId)} already exists`,
         );
       }
+      const maxAllowed = getMaxAccountsPerProvider(account.provider);
       if (
         storage.accounts.filter(
           (candidate) => candidate.provider === account.provider,
-        ).length >= MAX_ACCOUNTS_PER_PROVIDER
+        ).length >= maxAllowed
       ) {
         throw new Error(
-          `cannot add account: ${account.provider} pool is at the maximum of ${MAX_ACCOUNTS_PER_PROVIDER} accounts`,
+          `cannot add account: ${account.provider} pool is at the maximum of ${maxAllowed} accounts`,
         );
       }
       storage.accounts.push(account);
@@ -848,12 +891,13 @@ export class AccountManager {
         mergeOAuthAccount(current, account);
         return;
       }
+      const maxAllowed = getMaxAccountsPerProvider(provider);
       if (
         storage.accounts.filter((candidate) => candidate.provider === provider)
-          .length >= MAX_ACCOUNTS_PER_PROVIDER
+          .length >= maxAllowed
       ) {
         throw new Error(
-          `cannot add account: ${provider} pool is at the maximum of ${MAX_ACCOUNTS_PER_PROVIDER} accounts`,
+          `cannot add account: ${provider} pool is at the maximum of ${maxAllowed} accounts`,
         );
       }
       storage.accounts.push(account);
@@ -1197,11 +1241,11 @@ export class AccountManager {
           demoteAccountInProvider(storage, provider, account);
         }
         switchStickyIfUnselectable(storage, provider, id, observedAt);
-      } else if (
-        typeof account.quotaResetAt === "number" &&
-        account.quotaResetAt <= observedAt
-      ) {
+      } else {
         account.quotaResetAt = undefined;
+        if (account.lastSwitchReason === "quota-exhausted") {
+          delete (account as { lastSwitchReason?: unknown }).lastSwitchReason;
+        }
       }
     });
   }
@@ -1651,6 +1695,17 @@ export class AccountManager {
         if (!driver) {
           throw new Error(
             "ensureFreshToken: no refresh handler configured for provider kiro",
+          );
+        }
+        refreshed = await driver.refresh(account, { force });
+      } else if (
+        provider === "antigravity" &&
+        account.provider === "antigravity"
+      ) {
+        const driver = this.refreshByProvider.antigravity;
+        if (!driver) {
+          throw new Error(
+            "ensureFreshToken: no refresh handler configured for provider antigravity",
           );
         }
         refreshed = await driver.refresh(account, { force });

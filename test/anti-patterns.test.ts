@@ -250,6 +250,7 @@ describe("anti-patterns: plugin modules export only default", () => {
   it("package root re-exports all PluginModules as named exports (no default)", async () => {
     const mod = await import("../index.js");
     expect(Object.keys(mod).sort()).toEqual([
+      "antigravity",
       "codex",
       "kiro",
       "opencodeGo",
@@ -270,6 +271,12 @@ describe("anti-patterns: plugin modules export only default", () => {
     expect(mod.kiro).toEqual(
       expect.objectContaining({
         id: "kiro-multi",
+        server: expect.any(Function),
+      }),
+    );
+    expect((mod as Record<string, unknown>).antigravity).toEqual(
+      expect.objectContaining({
+        id: "antigravity-multi",
         server: expect.any(Function),
       }),
     );

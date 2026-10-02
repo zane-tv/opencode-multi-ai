@@ -13,7 +13,13 @@ import * as z from "zod";
  */
 
 /** Provider identity for accounts and sticky pointers. */
-export const PROVIDER_KINDS = ["xai", "codex", "kiro", "opencode-go"] as const;
+export const PROVIDER_KINDS = [
+  "xai",
+  "codex",
+  "kiro",
+  "antigravity",
+  "opencode-go",
+] as const;
 export const ProviderKindSchema = z.enum(PROVIDER_KINDS);
 export type ProviderKind = z.infer<typeof ProviderKindSchema>;
 
@@ -77,7 +83,7 @@ const AccountBaseFields = {
   priority: z.number().int().default(0),
   addedAt: z.number(),
   lastUsed: z.number().default(0),
-  lastSwitchReason: LastSwitchReasonSchema.default("initial"),
+  lastSwitchReason: LastSwitchReasonSchema.optional().default("initial"),
 
   /** Epoch ms when a quota-exhausted account may recover. */
   quotaResetAt: z.number().nullish().transform((v) => v ?? undefined),
@@ -300,6 +306,21 @@ function validateKiroAccount(
   }
 }
 
+const AntigravitySpecificFields = {
+  projectId: z.string().optional(),
+  tier: z.string().optional(),
+  accountType: z.string().optional(),
+  usageObservedAt: z.number().optional(),
+} as const;
+
+export const AntigravityAccountMetadataSchema = z
+  .object({
+    provider: z.literal("antigravity"),
+    ...AccountBaseFields,
+    ...AntigravitySpecificFields,
+  })
+  .strict();
+
 export const KiroAccountMetadataSchema =
   KiroAccountMetadataObjectSchema.superRefine(validateKiroAccount);
 
@@ -345,6 +366,7 @@ export const AccountMetadataSchema = z
     XaiAccountMetadataSchema,
     CodexAccountMetadataSchema,
     KiroAccountMetadataObjectSchema,
+    AntigravityAccountMetadataSchema,
     OpenCodeGoAccountMetadataSchema,
   ])
   .superRefine((account, ctx) => {
@@ -354,6 +376,9 @@ export type AccountMetadata = z.infer<typeof AccountMetadataSchema>;
 export type XaiAccountMetadata = z.infer<typeof XaiAccountMetadataSchema>;
 export type CodexAccountMetadata = z.infer<typeof CodexAccountMetadataSchema>;
 export type KiroAccountMetadata = z.infer<typeof KiroAccountMetadataSchema>;
+export type AntigravityAccountMetadata = z.infer<
+  typeof AntigravityAccountMetadataSchema
+>;
 export type OpenCodeGoAccountMetadata = z.infer<
   typeof OpenCodeGoAccountMetadataSchema
 >;
@@ -392,6 +417,7 @@ export const AccountStorageSchema = z.object({
       xai: z.string().optional(),
       codex: z.string().optional(),
       kiro: z.string().optional(),
+      antigravity: z.string().optional(),
       opencodeGo: z.string().optional(),
     })
     .default({}),

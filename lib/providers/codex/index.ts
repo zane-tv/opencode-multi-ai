@@ -59,8 +59,6 @@ export {
   forceEffortInBody,
   isUltraEffortRejected,
   bodyRequestsUltraEffort,
-  isServiceTierRejected,
-  stripServiceTierFromBody,
   sessionIdFromHeaders,
   CODEX_INCLUDE_ENCRYPTED_REASONING,
   CODEX_MODEL_NORMALIZE,

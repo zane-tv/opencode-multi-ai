@@ -11,6 +11,7 @@ export type TuiAction =
   | "tab-xai"
   | "tab-codex"
   | "tab-kiro"
+  | "tab-antigravity"
   | "tab-opencode-go"
   | "tab-next"
   | "toggle-locale"
@@ -19,6 +20,7 @@ export type TuiAction =
   | "add-device"
   | "add-browser"
   | "add-codex-json"
+  | "add-antigravity-9router"
   | "add-kiro-api-key"
   | "add-kiro-idc"
   | "add-kiro-idc-arn"
@@ -78,12 +80,16 @@ export type TuiBinding = {
 const XAI_CODEX: readonly ProviderKind[] = ["xai", "codex"];
 const CODEX_ONLY: readonly ProviderKind[] = ["codex"];
 const KIRO_ONLY: readonly ProviderKind[] = ["kiro"];
+const ANTIGRAVITY_ONLY: readonly ProviderKind[] = ["antigravity"];
 const OPENCODE_GO_ONLY: readonly ProviderKind[] = ["opencode-go"];
-
+const BROWSER_LOGIN_PROVIDERS: readonly ProviderKind[] = [
+  "xai",
+  "codex",
+  "antigravity",
+];
 /**
  * Canonical binding registry for footer + help generation.
  * Order is display order. Frozen so callers cannot mutate.
- * Provider-scoped entries are hidden on other agent tabs.
  */
 export const TUI_BINDINGS: readonly TuiBinding[] = Object.freeze([
   {
@@ -100,7 +106,7 @@ export const TUI_BINDINGS: readonly TuiBinding[] = Object.freeze([
     labelKey: "add_browser",
     descKey: "desc_add_browser",
     available: true,
-    providers: XAI_CODEX,
+    providers: BROWSER_LOGIN_PROVIDERS,
   },
   {
     key: "a",
@@ -133,6 +139,14 @@ export const TUI_BINDINGS: readonly TuiBinding[] = Object.freeze([
     descKey: "desc_add_codex_json",
     available: true,
     providers: CODEX_ONLY,
+  },
+  {
+    key: "o",
+    action: "add-antigravity-9router",
+    labelKey: "add_antigravity_9router",
+    descKey: "desc_add_antigravity_9router",
+    available: true,
+    providers: ANTIGRAVITY_ONLY,
   },
   {
     key: "o",
@@ -464,7 +478,8 @@ export function decodeTuiAction(key: TuiKeyEvent): TuiAction | undefined {
   if (name === "1" || seq === "1") return "tab-codex";
   if (name === "2" || seq === "2") return "tab-xai";
   if (name === "3" || seq === "3") return "tab-kiro";
-  if (name === "4" || seq === "4") return "tab-opencode-go";
+  if (name === "4" || seq === "4") return "tab-antigravity";
+  if (name === "5" || seq === "5") return "tab-opencode-go";
 
   // Letter actions — shift distinguishes A/R/L
   const letter =
@@ -661,6 +676,11 @@ const CODEX_ADD_ACTIONS: readonly TuiAction[] = [
   "add-codex-json",
 ];
 
+const ANTIGRAVITY_ADD_ACTIONS: readonly TuiAction[] = [
+  "add-browser",
+  "add-antigravity-9router",
+];
+
 const XAI_ADD_ACTIONS: readonly TuiAction[] = [
   "add-device",
   "add-browser",
@@ -675,6 +695,7 @@ export function addActionsForProvider(
 ): readonly TuiAction[] {
   if (provider === "kiro") return KIRO_ADD_ACTIONS;
   if (provider === "codex") return CODEX_ADD_ACTIONS;
+  if (provider === "antigravity") return ANTIGRAVITY_ADD_ACTIONS;
   if (provider === "opencode-go") return OPENCODE_GO_ADD_ACTIONS;
   return XAI_ADD_ACTIONS;
 }
@@ -733,6 +754,7 @@ export function addGroupKeysForProvider(
 ): string {
   if (provider === "kiro") return "a i I o O c";
   if (provider === "codex") return "a A o";
+  if (provider === "antigravity") return "a A o";
   if (provider === "opencode-go") return "a";
   return "a A";
 }
@@ -762,7 +784,11 @@ export function actionMenuItems(
     for (const id of Object.keys(GROUP_ACTIONS) as ActionMenuGroupId[]) {
       const meta = ACTION_MENU_GROUP_META[id];
       const keys =
-        id === "add" ? addGroupKeysForProvider(provider) : meta.keys;
+        id === "add" && provider === "kiro"
+          ? "a i I o O c"
+          : id === "add" && (provider === "codex" || provider === "antigravity")
+            ? "a A o"
+            : meta.keys;
       const descKey =
         id === "add" && provider === "kiro"
           ? "menu_desc_add_kiro"

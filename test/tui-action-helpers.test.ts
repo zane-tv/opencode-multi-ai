@@ -11,8 +11,8 @@ import {
   clearConfirmation,
   createActionMenuLevel,
   decodeTuiAction,
-  footerBindingsForProvider,
   normalizeTags,
+  footerBindingsForProvider,
   openActionMenuGroup,
   rowIndexFromMouse,
   type ConfirmationState,
@@ -101,7 +101,9 @@ describe("decodeTuiAction", () => {
     expect(decodeTuiAction(key({ name: "v" }))).toBe("toggle-live");
     expect(decodeTuiAction(key({ name: "1" }))).toBe("tab-codex");
     expect(decodeTuiAction(key({ name: "2" }))).toBe("tab-xai");
-    expect(decodeTuiAction(key({ name: "4" }))).toBe("tab-opencode-go");
+    expect(decodeTuiAction(key({ name: "3" }))).toBe("tab-kiro");
+    expect(decodeTuiAction(key({ name: "4" }))).toBe("tab-antigravity");
+    expect(decodeTuiAction(key({ name: "5" }))).toBe("tab-opencode-go");
     expect(decodeTuiAction(key({ name: "tab" }))).toBe("tab-next");
   });
 
@@ -422,6 +424,15 @@ describe("action menu hierarchy", () => {
       "add-kiro-cli",
     ]);
 
+    const agItems = actionMenuItems(level, "antigravity");
+    const agActions = agItems
+      .filter((i) => i.kind === "action")
+      .map((i) => (i.kind === "action" ? i.binding.action : ""));
+    expect(agActions).toEqual([
+      "add-browser",
+      "add-antigravity-9router",
+    ]);
+
     const goItems = actionMenuItems(level, "opencode-go");
     const goActions = goItems
       .filter((i) => i.kind === "action")
@@ -452,11 +463,11 @@ describe("action menu hierarchy", () => {
     );
     expect(decodeTuiAction(key({ sequence: "F" }))).toBe("toggle-codex-fast");
   });
-
   it("hides Codex Fast top action on non-codex tabs", () => {
     const codex = actionMenuItems(createActionMenuLevel(), "codex");
     const xai = actionMenuItems(createActionMenuLevel(), "xai");
     const kiro = actionMenuItems(createActionMenuLevel(), "kiro");
+    const ag = actionMenuItems(createActionMenuLevel(), "antigravity");
     const go = actionMenuItems(createActionMenuLevel(), "opencode-go");
     expect(
       codex.some((i) => i.kind === "top" && i.action === "toggle-codex-fast"),
@@ -466,6 +477,9 @@ describe("action menu hierarchy", () => {
     ).toBe(false);
     expect(
       kiro.some((i) => i.kind === "top" && i.action === "toggle-codex-fast"),
+    ).toBe(false);
+    expect(
+      ag.some((i) => i.kind === "top" && i.action === "toggle-codex-fast"),
     ).toBe(false);
     expect(
       go.some((i) => i.kind === "top" && i.action === "toggle-codex-fast"),
@@ -527,7 +541,7 @@ describe("action menu hierarchy", () => {
         (i) => i.kind === "action" && i.binding.action === "rotate-active",
       ),
     ).toBe(true);
-    for (const provider of ["xai", "codex", "kiro"] as const) {
+    for (const provider of ["xai", "codex", "kiro", "antigravity"] as const) {
       const items = actionMenuItems(go, provider);
       expect(
         items.some(

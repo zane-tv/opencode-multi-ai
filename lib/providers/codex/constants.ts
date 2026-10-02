@@ -148,6 +148,79 @@ export const DEFAULT_MODELS: Record<
     >;
   }
 > = {
+  "gpt-6-astra": {
+    name: "GPT-6 Astra",
+    attachment: true,
+    reasoning: true,
+    modalities: CODEX_CHAT_MODALITIES,
+    limit: LIMIT_LARGE,
+    variants: { ...REASONING_VARIANTS_SOL },
+  },
+  "gpt-6.1-sol": {
+    name: "GPT-6.1 Sol",
+    attachment: true,
+    reasoning: true,
+    modalities: CODEX_CHAT_MODALITIES,
+    limit: LIMIT_LARGE,
+    variants: { ...REASONING_VARIANTS_SOL },
+  },
+  "gpt-6-sol": {
+    name: "GPT-6 Sol",
+    attachment: true,
+    reasoning: true,
+    modalities: CODEX_CHAT_MODALITIES,
+    limit: LIMIT_LARGE,
+    variants: { ...REASONING_VARIANTS_SOL },
+  },
+  "gpt-6-luna": {
+    name: "GPT-6 Luna",
+    attachment: true,
+    reasoning: true,
+    modalities: CODEX_CHAT_MODALITIES,
+    limit: LIMIT_LARGE,
+    variants: { ...REASONING_VARIANTS_SOL },
+  },
+  "gpt-5.6-sol": {
+    name: "GPT-5.6 Sol",
+    attachment: true,
+    reasoning: true,
+    modalities: CODEX_CHAT_MODALITIES,
+    limit: LIMIT_LARGE,
+    variants: { ...REASONING_VARIANTS_SOL },
+  },
+  "gpt-5.6-terra": {
+    name: "GPT-5.6 Terra",
+    attachment: true,
+    reasoning: true,
+    modalities: CODEX_CHAT_MODALITIES,
+    limit: LIMIT_LARGE,
+    // Live probe (Plus): max accepted; ultra rejected; minimal rejected.
+    variants: { ...REASONING_VARIANTS_SOL },
+  },
+  "gpt-5.6-luna": {
+    name: "GPT-5.6 Luna",
+    attachment: true,
+    reasoning: true,
+    modalities: CODEX_CHAT_MODALITIES,
+    limit: LIMIT_LARGE,
+    variants: { ...REASONING_VARIANTS_SOL },
+  },
+  "gpt-5.5": {
+    name: "GPT-5.5",
+    attachment: true,
+    reasoning: true,
+    modalities: CODEX_CHAT_MODALITIES,
+    limit: LIMIT_LARGE,
+    variants: { ...REASONING_VARIANTS_XHIGH },
+  },
+  "gpt-reserve": {
+    name: "GPT-Reserve",
+    attachment: true,
+    reasoning: true,
+    modalities: CODEX_CHAT_MODALITIES,
+    limit: LIMIT_LARGE,
+    variants: { ...REASONING_VARIANTS_SOL },
+  },
   "gpt-5-codex": {
     name: "GPT-5 Codex",
     attachment: true,
@@ -188,14 +261,6 @@ export const DEFAULT_MODELS: Record<
     limit: LIMIT_CODEX,
     variants: { ...REASONING_VARIANTS_XHIGH },
   },
-  "gpt-5.5": {
-    name: "GPT-5.5",
-    attachment: true,
-    reasoning: true,
-    modalities: CODEX_CHAT_MODALITIES,
-    limit: LIMIT_LARGE,
-    variants: { ...REASONING_VARIANTS_XHIGH },
-  },
   "gpt-5.4-mini": {
     name: "GPT-5.4 Mini",
     attachment: true,
@@ -211,31 +276,6 @@ export const DEFAULT_MODELS: Record<
     modalities: CODEX_CHAT_MODALITIES,
     limit: LIMIT_CODEX,
     variants: { ...REASONING_VARIANTS_XHIGH },
-  },
-  "gpt-5.6-sol": {
-    name: "GPT-5.6 Sol",
-    attachment: true,
-    reasoning: true,
-    modalities: CODEX_CHAT_MODALITIES,
-    limit: LIMIT_LARGE,
-    variants: { ...REASONING_VARIANTS_SOL },
-  },
-  "gpt-5.6-terra": {
-    name: "GPT-5.6 Terra",
-    attachment: true,
-    reasoning: true,
-    modalities: CODEX_CHAT_MODALITIES,
-    limit: LIMIT_LARGE,
-    // Live probe (Plus): max accepted; ultra rejected; minimal rejected.
-    variants: { ...REASONING_VARIANTS_SOL },
-  },
-  "gpt-5.6-luna": {
-    name: "GPT-5.6 Luna",
-    attachment: true,
-    reasoning: true,
-    modalities: CODEX_CHAT_MODALITIES,
-    limit: LIMIT_LARGE,
-    variants: { ...REASONING_VARIANTS_SOL },
   },
 };
 
