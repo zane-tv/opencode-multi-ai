@@ -5,7 +5,7 @@
 
 ## OVERVIEW
 
-HTTP multi-account pool for SuperGrok (xAI). `xaiAdapter` host-pins every request to `api.x.ai`. Transport: pure HTTP via `createRotationFetch`. Plugin: `lib/plugin/xai.ts` → `{ id, server }` only.
+HTTP multi-account pool for SuperGrok (xAI). `xaiAdapter` host-pins every request to `api.x.ai` (default) or `cli-chat-proxy.grok.com` (CLI-proxy mode — routes like the grok CLI for subscription tiers the API rejects). Transport: pure HTTP via `createRotationFetch`. Plugin: `lib/plugin/xai.ts` → `{ id, server }` only.
 
 | Piece | Role |
 | --- | --- |
@@ -19,7 +19,8 @@ HTTP multi-account pool for SuperGrok (xAI). `xaiAdapter` host-pins every reques
 
 ```
 lib/providers/xai/
-├── adapter.ts           # xaiAdapter (HTTP host-pin)
+├── adapter.ts           # xaiAdapter (HTTP host-pin, CLI-proxy rewrite)
+├── cli-proxy.ts         # CLI-proxy mode toggle + headers (xaiCliProxy)
 ├── constants.ts
 ├── models-sync.ts
 ├── index.ts
@@ -43,6 +44,7 @@ lib/providers/xai/
 | Task | File |
 | --- | --- |
 | Adapter / host-pin | `adapter.ts` |
+| CLI-proxy mode toggle | `cli-proxy.ts` |
 | Browser OAuth | `auth/oauth.ts`, `auth/server.ts` |
 | Device code / refresh / login | `auth/device-code.ts`, `refresh.ts`, `login.ts` |
 | Failure taxonomy | `request/classify-error.ts` |
@@ -55,7 +57,10 @@ lib/providers/xai/
 ## CONVENTIONS
 
 - Transport: `transport.kind: "http"` → `createRotationFetch` (not custom).
-- `resolveUrl`: host-pin only; throw if not `api.x.ai`.
+- `resolveUrl`: host-pin only; throw if not `api.x.ai` / `cli-chat-proxy.grok.com`.
+- CLI-proxy mode (`MULTI_AI_XAI_CLI_PROXY` env or settings `xaiCliProxy`): rewrite
+  api.x.ai → cli-chat-proxy.grok.com and send `x-xai-token-auth: xai-grok-cli` +
+  `x-grok-client-version` (proxy 426s without it) + grok.com origin/referer.
 - Bearer: overwrite `Authorization` (never append); dummy SDK key only.
 - OAuth constants frozen: loopback `:56121`, `plan=generic`.
 - Models network sync after successful OAuth (or explicit allowNetwork).
@@ -64,7 +69,8 @@ lib/providers/xai/
 
 ## ANTI-PATTERNS
 
-- NEVER send bearer except to `api.x.ai`.
+- NEVER send bearer except to `api.x.ai` or `cli-chat-proxy.grok.com` (CLI-proxy mode).
+- NEVER omit `x-grok-client-version` on CLI-proxy requests (HTTP 426).
 - NEVER change OAuth port `:56121` or `plan=generic`.
 - NEVER raw token paste into the multi pool (OAuth only).
 - NEVER override built-in id `xai` (use `xai-multi`).

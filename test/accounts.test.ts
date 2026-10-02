@@ -25,7 +25,7 @@ const PROVIDER_CASES = [
   { provider: "codex", source: "opencode-multi-codex" },
 ] as const;
 
-type TestedProviderKind = Exclude<ProviderKind, "kiro">;
+type TestedProviderKind = Exclude<ProviderKind, "kiro" | "opencode-go">;
 type TestedAccount = Extract<AccountMetadata, { provider: TestedProviderKind }>;
 
 type CommonAccountOverrides = Partial<

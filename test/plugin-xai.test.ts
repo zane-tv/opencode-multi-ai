@@ -9,6 +9,7 @@ import {
   getAccountManager,
   resetAccountManager,
 } from "../lib/core/accounts.js";
+import { resetXaiCliProxyForTests } from "../lib/providers/xai/cli-proxy.js";
 import type { PluginInput } from "@opencode-ai/plugin";
 
 function tmpStorePath(): string {
@@ -32,13 +33,23 @@ function minimalPluginInput(): PluginInput {
 
 describe("lib/plugin/xai.ts", () => {
   const paths: string[] = [];
+  let settingsPath = "";
 
-  beforeEach(() => {
+  beforeEach(async () => {
     resetAccountManager();
+    // Hermetic settings file — the real one may carry xaiCliProxy: true.
+    settingsPath = tmpStorePath();
+    process.env.MULTI_AI_SETTINGS_PATH = settingsPath;
+    delete process.env.MULTI_AI_XAI_CLI_PROXY;
+    resetXaiCliProxyForTests();
+    paths.push(settingsPath);
   });
 
   afterEach(async () => {
     resetAccountManager();
+    delete process.env.MULTI_AI_SETTINGS_PATH;
+    delete process.env.MULTI_AI_XAI_CLI_PROXY;
+    resetXaiCliProxyForTests();
     await Promise.all(
       paths.splice(0).map(async (p) => {
         try {

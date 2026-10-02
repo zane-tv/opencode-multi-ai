@@ -6,6 +6,14 @@ import {
   defaultModelsCachePath,
   XAI_API_BASE,
 } from "./constants.js";
+import {
+  CLI_PROXY_BASE,
+  CLI_PROXY_ORIGIN,
+  CLI_PROXY_REFERER,
+  CLI_TOKEN_AUTH_VALUE,
+  cliClientVersion,
+  getXaiCliProxyMode,
+} from "./cli-proxy.js";
 import { logger } from "../../core/logger.js";
 
 /**
@@ -194,18 +202,29 @@ export async function fetchModelsDevXai(): Promise<
 }
 
 /**
- * List model ids from a live xAI API token (OpenAI-compatible /v1/models).
+ * List model ids from a live xAI token (OpenAI-compatible /v1/models).
  * Returns only ids — metadata still comes from models.dev when available.
+ * In CLI-proxy mode the catalog comes from cli-chat-proxy.grok.com with the
+ * grok CLI auth headers (the surface that actually serves this account).
  */
 export async function fetchLiveXaiModelIds(
   accessToken: string,
 ): Promise<string[]> {
-  const data = (await fetchJson(`${XAI_API_BASE}/models`, {
-    headers: {
-      authorization: `Bearer ${accessToken}`,
-      accept: "application/json",
-    },
-  })) as { data?: Array<{ id?: string }> };
+  const cliProxy = getXaiCliProxyMode();
+  const base = cliProxy ? CLI_PROXY_BASE : XAI_API_BASE;
+  const headers: Record<string, string> = {
+    authorization: `Bearer ${accessToken}`,
+    accept: "application/json",
+  };
+  if (cliProxy) {
+    headers["x-xai-token-auth"] = CLI_TOKEN_AUTH_VALUE;
+    headers["x-grok-client-version"] = cliClientVersion();
+    headers["origin"] = CLI_PROXY_ORIGIN;
+    headers["referer"] = CLI_PROXY_REFERER;
+  }
+  const data = (await fetchJson(`${base}/models`, { headers })) as {
+    data?: Array<{ id?: string }>;
+  };
 
   const ids = (data.data ?? [])
     .map((m) => m.id)

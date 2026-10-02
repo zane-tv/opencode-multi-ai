@@ -24,6 +24,14 @@ import {
   XAI_API_HOST,
 } from "./constants.js";
 import {
+  CLI_PROXY_HOST,
+  CLI_PROXY_ORIGIN,
+  CLI_PROXY_REFERER,
+  CLI_TOKEN_AUTH_VALUE,
+  cliClientVersion,
+  getXaiCliProxyMode,
+} from "./cli-proxy.js";
+import {
   classifyResponse as classifyXaiResponse,
   classifyThrownError as classifyXaiThrownError,
 } from "./request/classify-error.js";
@@ -52,12 +60,21 @@ function toUrl(input: string | URL): URL {
   return typeof input === "string" ? new URL(input) : new URL(input.href);
 }
 
+/** Hosts the xAI bearer may be sent to (api.x.ai + grok CLI proxy). */
+const ALLOWED_XAI_HOSTS = new Set([XAI_API_HOST, CLI_PROXY_HOST]);
+
 function resolveXaiUrl(input: string | URL): string {
   const url = toUrl(input);
-  if (url.host !== XAI_API_HOST) {
+  if (!ALLOWED_XAI_HOSTS.has(url.host)) {
     throw new Error(
-      `xai resolveUrl refusing non-xAI host "${url.host}" (expected ${XAI_API_HOST})`,
+      `xai resolveUrl refusing non-xAI host "${url.host}" (expected ${XAI_API_HOST} or ${CLI_PROXY_HOST})`,
     );
+  }
+  // CLI-proxy mode routes inference through cli-chat-proxy.grok.com exactly
+  // like the grok CLI (same OAuth token; api.x.ai rejects subscription tiers
+  // without API credits/entitlement).
+  if (getXaiCliProxyMode() && url.host === XAI_API_HOST) {
+    url.host = CLI_PROXY_HOST;
   }
   return url.toString();
 }
@@ -66,6 +83,16 @@ function buildXaiHeaders(ctx: BuildHeadersContext): Headers {
   const headers = new Headers(ctx.initHeaders);
   // Always overwrite — SDK may have stuffed the dummy key.
   headers.set("Authorization", `Bearer ${ctx.accessToken}`);
+  // CLI proxy surface requires the same token-auth + origin headers the grok
+  // CLI sends. Decided by the RESOLVED host so a manual baseURL override to
+  // the proxy also gets them.
+  if (toUrl(ctx.url ?? "https://" + XAI_API_HOST).host === CLI_PROXY_HOST) {
+    headers.set("x-xai-token-auth", CLI_TOKEN_AUTH_VALUE);
+    // Proxy hard-rejects requests without a client version (HTTP 426).
+    headers.set("x-grok-client-version", cliClientVersion());
+    headers.set("origin", CLI_PROXY_ORIGIN);
+    headers.set("referer", CLI_PROXY_REFERER);
+  }
   return headers;
 }
 

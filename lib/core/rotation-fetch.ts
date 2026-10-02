@@ -213,6 +213,7 @@ async function doRequest(
     accountId,
     organizationId,
     promptCacheKey,
+    url,
     initHeaders: init?.headers as
       | Headers
       | Record<string, string | ReadonlyArray<string>>

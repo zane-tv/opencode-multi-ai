@@ -253,6 +253,7 @@ describe("anti-patterns: plugin modules export only default", () => {
       "antigravity",
       "codex",
       "kiro",
+      "opencodeGo",
       "xai",
     ]);
     expect(mod.xai).toEqual(
@@ -276,6 +277,12 @@ describe("anti-patterns: plugin modules export only default", () => {
     expect((mod as Record<string, unknown>).antigravity).toEqual(
       expect.objectContaining({
         id: "antigravity-multi",
+        server: expect.any(Function),
+      }),
+    );
+    expect(mod.opencodeGo).toEqual(
+      expect.objectContaining({
+        id: "opencode-go-multi",
         server: expect.any(Function),
       }),
     );

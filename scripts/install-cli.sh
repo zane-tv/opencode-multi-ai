@@ -4,6 +4,7 @@
 #   op-ai …                  primary (tabbed multi-provider)
 #   op-xai …                 xAI-forced alias
 #   op-codex …               Codex-forced alias
+#   op-opencode-go …         OpenCode Go-forced alias
 #   opencode-multi-ai …      package alias
 #   opencode-multi-xai …     historical alias → same CLI
 #   opencode-multi-codex …   historical alias → same CLI
@@ -104,6 +105,7 @@ EOF
 write_shim "op-ai"
 write_shim "op-xai"
 write_shim "op-codex"
+write_shim "op-opencode-go"
 write_shim "opencode-multi-ai"
 write_shim "opencode-multi-xai"
 write_shim "opencode-multi-codex"
@@ -139,6 +141,7 @@ echo "Installed global CLI into $BIN_DIR"
 echo "  op-ai"
 echo "  op-xai"
 echo "  op-codex"
+echo "  op-opencode-go"
 echo "  opencode-multi-ai"
 echo "  opencode-multi-xai / opencode-multi-codex / xai-multi / codex-multi (aliases)"
 echo "  → $BUN_BIN $CLI"
@@ -173,6 +176,7 @@ echo "  op-ai help"
 echo "  op-ai list"
 echo "  op-xai list"
 echo "  op-codex list"
+echo "  op-opencode-go list"
 echo "  op-ai status"
 echo "  op-ai limits --probe"
 echo "  op-ai add --provider xai"

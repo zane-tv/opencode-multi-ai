@@ -10,6 +10,8 @@
  * quota probe, live toggle, two-press remove/prune, edit label/tags/note.
  */
 
+import { createHash } from "node:crypto";
+
 import {
   BoxRenderable,
   InputRenderable,
@@ -39,7 +41,9 @@ import { isInvalidGrantError } from "../core/rotation-fetch.js";
 import type {
   AccountMetadata,
   CodexAccountMetadata,
+  CooldownReason,
   KiroAccountMetadata,
+  OpenCodeGoAccountMetadata,
   XaiAccountMetadata,
 } from "../core/schemas.js";
 import {
@@ -86,6 +90,12 @@ import {
 import { codexAdapter } from "../providers/codex/adapter.js";
 import { kiroAdapter } from "../providers/kiro/adapter.js";
 import { antigravityAdapter } from "../providers/antigravity/adapter.js";
+import { openCodeGoAdapter } from "../providers/opencode-go/adapter.js";
+import { writeActiveKeyToAuthJson } from "../providers/opencode-go/auth/auth-file.js";
+import {
+  normalizeAuthCookie,
+  resolveDashboardCred,
+} from "../providers/opencode-go/dashboard.js";
 import {
   isWindowDisabled,
   leftPercent,
@@ -171,6 +181,13 @@ const T = {
   antigravitySelectedBg: "#251238",
   antigravitySelectedText: "#c084fc",
 
+  opencodeGo: "#f472b6",
+  opencodeGoBright: "#f9a8d4",
+  opencodeGoDim: "#be185d",
+  opencodeGoBorder: "#ec4899",
+  opencodeGoSelectedBg: "#2a0f1e",
+  opencodeGoSelectedText: "#f9a8d4",
+
   ready: "#4ade80",
   quota: "#fbbf24",
   cooling: "#22d3ee",
@@ -221,6 +238,7 @@ const ADAPTERS: Record<TuiTab, AnyProviderAdapter> = {
   codex: codexAdapter,
   kiro: kiroAdapter,
   antigravity: antigravityAdapter,
+  "opencode-go": openCodeGoAdapter,
 };
 
 type StatusTone = "ok" | "warn" | "err" | "info" | "neutral";
@@ -253,6 +271,18 @@ type KiroAddWizard =
   | { method: "cli" };
 
 type CodexAddWizard = { method: "json" };
+
+/**
+ * opencode-go add: API key paste, optional label, optional per-account
+ * dashboard credentials (workspace id + auth cookie; no OAuth). Skipping
+ * workspace/cookie falls back to env at probe time.
+ */
+type OpenCodeGoAddWizard = {
+  step: "key" | "label" | "workspace" | "cookie";
+  apiKey?: string;
+  label?: string;
+  workspaceId?: string;
+};
 
 type EditContext = {
   provider: TuiTab;
@@ -362,6 +392,16 @@ function providerHue(tab: TuiTab): {
       selectedText: T.antigravitySelectedText,
     };
   }
+  if (tab === "opencode-go") {
+    return {
+      accent: T.opencodeGo,
+      bright: T.opencodeGoBright,
+      dim: T.opencodeGoDim,
+      border: T.opencodeGoBorder,
+      selectedBg: T.opencodeGoSelectedBg,
+      selectedText: T.opencodeGoSelectedText,
+    };
+  }
   return {
     accent: T.codex,
     bright: T.codexBright,
@@ -463,6 +503,10 @@ function meterBarChunks(
 }
 
 function remainingPercent(account: AccountMetadata): number | undefined {
+  if (account.provider === "opencode-go") {
+    // Static API keys have no quota/usage semantics — no meter.
+    return undefined;
+  }
   if (account.provider === "xai") {
     return effectiveXaiRemainingPercent(
       account as XaiAccountMetadata,
@@ -522,6 +566,8 @@ function styledBrand(): StyledText {
   chunks.push(bold(fg(T.kiroBright)("◈")));
   chunks.push(fg(T.brandSep)("·"));
   chunks.push(bold(fg(T.antigravityBright)("◈")));
+  chunks.push(fg(T.brandSep)("·"));
+  chunks.push(bold(fg(T.opencodeGoBright)("◈")));
   chunks.push(fg(T.brandSep)("⟩"));
   chunks.push(bold(fg(T.brandMark)("◆")));
   chunks.push(fg(T.textDim)("  "));
@@ -531,7 +577,7 @@ function styledBrand(): StyledText {
   chunks.push(fg(T.textDim)("  ·  "));
   chunks.push(
     fg(T.brandTag)(
-      tr("brand").trim() || "OpenCode Multi AI · Codex + xAI + Kiro + Antigravity",
+      tr("brand").trim() || "OpenCode Multi AI · Codex + xAI + Kiro + Antigravity + OpenCode Go",
     ),
   );
   chunks.push(fg(T.textDim)("  ·  "));
@@ -568,9 +614,105 @@ function styledTabBar(active: TuiTab): StyledText {
   chunks.push(fg(T.key)("2"));
   chunks.push(fg(T.textDim)("/"));
   chunks.push(fg(T.key)("3"));
+  chunks.push(fg(T.textDim)("/"));
+  chunks.push(fg(T.key)("4"));
   chunks.push(fg(T.textDim)(" or "));
   chunks.push(fg(T.key)("Tab"));
   return joinChunks(chunks);
+}
+
+/**
+ * Tab-level OpenCode Go workspace quota segment (rendered ONCE per tab, not
+ * per account — quota is workspace-level and shared across every pool key).
+ *
+ * - Snapshot present (sticky account was probed): real percentages + a 5h
+ *   countdown via formatUntil.
+ * - Snapshot absent but env cred configured: `—` placeholders; `r` probes.
+ * - Snapshot absent and no cred: faint hint naming the env vars.
+ */
+function openCodeGoQuotaChunks(
+  accounts: AccountMetadata[],
+  now: number,
+  accent: string,
+): TextChunk[] {
+  // Workspace quota is shared across all pool keys; display the FRESHEST
+  // snapshot regardless of which account was probed last (probed ≢ sticky).
+  const goAccounts = accounts.filter(
+    (a): a is OpenCodeGoAccountMetadata => a.provider === "opencode-go",
+  );
+  let freshest: OpenCodeGoAccountMetadata | undefined;
+  for (const a of goAccounts) {
+    const reset = a.openCodeGoFiveHourReset;
+    if (typeof reset !== "number" || reset <= 0) continue;
+    if (!freshest || reset > (freshest.openCodeGoFiveHourReset ?? 0)) {
+      freshest = a;
+    }
+  }
+  const five = freshest?.openCodeGoFiveHourUsage;
+  const weekly = freshest?.openCodeGoWeeklyUsage;
+  const monthly = freshest?.openCodeGoMonthlyUsage;
+  const chunks: TextChunk[] = [];
+  if (five !== undefined && five !== null) {
+    const reset = freshest?.openCodeGoFiveHourReset;
+    const remaining = Math.max(0, Math.min(100, 100 - five));
+    // 5h meter: bars fill proportional to USED (acting as a "fuel gauge"
+    // toward the limit); color signals LOW remaining (red when near-exhausted).
+    const meterWidth = 10;
+    const { filled, empty } = meterParts(five, meterWidth);
+    const barColor = meterColor(remaining);
+    chunks.push(fg(T.textDim)("["));
+    if (filled) chunks.push(fg(barColor)(filled));
+    if (empty) chunks.push(fg(T.meterEmpty)(empty));
+    chunks.push(fg(T.textDim)("]"));
+    chunks.push(fg(T.textDim)(" "));
+    chunks.push(fg(accent)(`5h: ${five}% used`));
+    if (typeof reset === "number") {
+      chunks.push(fg(T.textDim)(" ("));
+      chunks.push(
+        fg(T.value)(formatUntil(reset, now, { withAbsolute: false })),
+      );
+      chunks.push(fg(T.textDim)(")"));
+    }
+    chunks.push(fg(T.textDim)(" · "));
+    chunks.push(
+      fg(accent)(weekly === undefined ? "week: —" : `week: ${weekly}%`),
+    );
+    chunks.push(fg(T.textDim)(" · "));
+    chunks.push(
+      fg(accent)(monthly === undefined ? "month: —" : `month: ${monthly}%`),
+    );
+    // Diagnostic: show the workspace the FRESHEST snapshot was scraped from
+    // (per-account cred first, env fallback) so the user can compare it with
+    // the subscription they are watching in the browser. Only shown when a
+    // snapshot exists — with no data it would be misleading.
+    const snapshotWs = freshest?.openCodeGoWorkspaceId?.trim();
+    const wsId =
+      snapshotWs && snapshotWs.length > 0
+        ? snapshotWs
+        : resolveDashboardCred()?.workspaceId;
+    if (wsId) {
+      const shortWs = wsId.length > 12 ? `${wsId.slice(0, 12)}…` : wsId;
+      chunks.push(fg(T.textDim)(" · "));
+      chunks.push(fg(T.textDim)(`ws:${shortWs}`));
+    }
+    return chunks;
+  }
+  // Per-account cred OR env cred → "—" placeholders, press r to probe.
+  const hasAccountCred = goAccounts.some(
+    (a) => a.openCodeGoWorkspaceId && a.openCodeGoAuthCookie,
+  );
+  if (hasAccountCred || resolveDashboardCred()) {
+    chunks.push(
+      fg(T.textDim)("5h: — · week: — · month: — (press r to probe)"),
+    );
+    return chunks;
+  }
+  chunks.push(
+    fg(T.textDim)(
+      "Press r to probe quota (set MULTI_AI_OPENCODE_GO_WORKSPACE_ID + MULTI_AI_OPENCODE_GO_AUTH_COOKIE, or add per-key workspace+cookie at add time)",
+    ),
+  );
+  return chunks;
 }
 
 function styledHeader(
@@ -589,47 +731,53 @@ function styledHeader(
       pruneCommand: `${tab}-prune`,
     },
   );
+  const chunks: TextChunk[] = [];
   if (accounts.length === 0) {
-    return t`${bold(fg(hue.bright)(TAB_LABELS[tab]))}${fg(T.textDim)(" · ")}${fg(T.warn)(tr("empty_pool").trim())}`;
-  }
-  const summary = summarizePool(accounts as StatusAccount[], now);
-  const chunks: TextChunk[] = [
-    bold(fg(hue.bright)(TAB_LABELS[tab])),
-    fg(T.textDim)(" · "),
-  ];
-  const active = accounts[activeIndex];
-  if (active) {
-    chunks.push(bold(fg(hue.bright)("★ ")));
-    chunks.push(bold(fg(T.ready)("ACTIVE ")));
-    chunks.push(bold(fg(hue.bright)(accountDisplayName(active))));
+    chunks.push(bold(fg(hue.bright)(TAB_LABELS[tab])));
     chunks.push(fg(T.textDim)(" · "));
-  }
-  chunks.push(fg(T.ready)(`${summary.ready} ready`));
-  if (summary.quotaExhausted > 0) {
+    chunks.push(fg(T.warn)(tr("empty_pool").trim()));
+  } else {
+    const summary = summarizePool(accounts as StatusAccount[], now);
+    chunks.push(bold(fg(hue.bright)(TAB_LABELS[tab])));
     chunks.push(fg(T.textDim)(" · "));
-    chunks.push(fg(T.quota)(`${summary.quotaExhausted} quota`));
-  }
-  if (summary.cooling > 0) {
-    chunks.push(fg(T.textDim)(" · "));
-    chunks.push(fg(T.cooling)(`${summary.cooling} cooling`));
-  }
-  if (summary.entitlementBlocked > 0) {
-    chunks.push(fg(T.textDim)(" · "));
-    chunks.push(fg(T.blocked)(`${summary.entitlementBlocked} blocked`));
-  }
-  if (summary.disabled > 0) {
-    chunks.push(fg(T.textDim)(" · "));
-    chunks.push(fg(T.disabled)(`${summary.disabled} disabled`));
-  }
-  if (summary.dead > 0 || summary.flagged > 0) {
-    chunks.push(fg(T.textDim)(" · "));
-    const warnParts: string[] = [];
-    if (summary.dead > 0) warnParts.push(`${summary.dead} dead`);
-    if (summary.flagged > 0) warnParts.push(`${summary.flagged} flagged`);
-    chunks.push(bold(fg(T.dead)(`⚠ ${warnParts.join(", ")}`)));
-    chunks.push(fg(T.textDim)(` (run ${tab}-prune)`));
+    const active = accounts[activeIndex];
+    if (active) {
+      chunks.push(bold(fg(hue.bright)("★ ")));
+      chunks.push(bold(fg(T.ready)("ACTIVE ")));
+      chunks.push(bold(fg(hue.bright)(accountDisplayName(active))));
+      chunks.push(fg(T.textDim)(" · "));
+    }
+    chunks.push(fg(T.ready)(`${summary.ready} ready`));
+    if (summary.quotaExhausted > 0) {
+      chunks.push(fg(T.textDim)(" · "));
+      chunks.push(fg(T.quota)(`${summary.quotaExhausted} quota`));
+    }
+    if (summary.cooling > 0) {
+      chunks.push(fg(T.textDim)(" · "));
+      chunks.push(fg(T.cooling)(`${summary.cooling} cooling`));
+    }
+    if (summary.entitlementBlocked > 0) {
+      chunks.push(fg(T.textDim)(" · "));
+      chunks.push(fg(T.blocked)(`${summary.entitlementBlocked} blocked`));
+    }
+    if (summary.disabled > 0) {
+      chunks.push(fg(T.textDim)(" · "));
+      chunks.push(fg(T.disabled)(`${summary.disabled} disabled`));
+    }
+    if (summary.dead > 0 || summary.flagged > 0) {
+      chunks.push(fg(T.textDim)(" · "));
+      const warnParts: string[] = [];
+      if (summary.dead > 0) warnParts.push(`${summary.dead} dead`);
+      if (summary.flagged > 0) warnParts.push(`${summary.flagged} flagged`);
+      chunks.push(bold(fg(T.dead)(`⚠ ${warnParts.join(", ")}`)));
+      chunks.push(fg(T.textDim)(` (run ${tab}-prune)`));
+    }
   }
   void plain;
+  if (tab === "opencode-go") {
+    chunks.push(fg(T.textDim)("  ·  "));
+    chunks.push(...openCodeGoQuotaChunks(accounts, now, hue.accent));
+  }
   return joinChunks(chunks);
 }
 
@@ -697,6 +845,7 @@ function styledFooter(): StyledText {
 function styledHelp(activeTab: TuiTab, locale: Locale): StyledText {
   void locale;
   const hue = providerHue(activeTab);
+  const agentLabel = TAB_LABELS[activeTab];
   const chunks: TextChunk[] = [
     bold(fg(T.codexBright)("◈")),
     fg(T.brandSep)("·"),
@@ -705,12 +854,16 @@ function styledHelp(activeTab: TuiTab, locale: Locale): StyledText {
     bold(fg(T.kiroBright)("◈")),
     fg(T.brandSep)("·"),
     bold(fg(T.antigravityBright)("◈")),
+    fg(T.brandSep)("·"),
+    bold(fg(T.opencodeGoBright)("◈")),
     fg(T.brandSep)("⟩"),
     bold(fg(T.brandMark)("◆")),
     fg(T.textDim)("  "),
     bold(fg(T.brandOp)("OpenCode Multi AI")),
     fg(T.text)("\n"),
-    fg(T.textDim)("  One pool · four providers · s = ACTIVE + list #1"),
+    fg(T.textDim)(
+      `  ${agentLabel} shortcuts · s = ACTIVE + list #1 · 1/2/3/4/5 tabs`,
+    ),
     fg(T.text)("\n"),
     fg(T.textDim)("─".repeat(40)),
     fg(T.text)("\n"),
@@ -744,6 +897,15 @@ function styledHelp(activeTab: TuiTab, locale: Locale): StyledText {
     chunks.push(fg(T.text)("\n"));
     chunks.push(
       fg(T.textDim)("  o  1-Click import accounts from 9Router"),
+    );
+    chunks.push(fg(T.text)("\n\n"));
+  } else if (activeTab === "opencode-go") {
+    chunks.push(bold(fg(hue.bright)("OpenCode Go API key")));
+    chunks.push(fg(T.text)("\n"));
+    chunks.push(fg(T.textDim)("  a  Paste API key (sk_…) — no OAuth"));
+    chunks.push(fg(T.text)("\n"));
+    chunks.push(
+      fg(T.textDim)("  w  Rotate active key → auth.json · restart opencode"),
     );
     chunks.push(fg(T.text)("\n\n"));
   }
@@ -1272,6 +1434,67 @@ function styledDetail(
               : "—";
       chunks.push(...labelValue("rate", rate, T.cooling));
     }
+  } else if (account.provider === "opencode-go") {
+    const go = account as OpenCodeGoAccountMetadata;
+    const renderWindow = (
+      label: string,
+      usedPct: number | undefined,
+      resetAt: number | undefined,
+      width = 14,
+    ): void => {
+      if (usedPct === undefined || !Number.isFinite(usedPct)) {
+        chunks.push(...labelValue(label, "—", T.textMuted));
+        return;
+      }
+      const remaining = Math.max(0, Math.min(100, 100 - usedPct));
+      const barColor = meterColor(remaining);
+      chunks.push(fg(T.label)(`${label.padEnd(11)} `));
+      chunks.push(fg(T.textDim)("│"));
+      chunks.push(...meterBarChunks(remaining, width));
+      chunks.push(fg(T.textDim)("│"));
+      chunks.push(fg(T.textDim)("  "));
+      chunks.push(
+        bold(
+          fg(barColor)(
+            `${Math.round(usedPct)}% used` +
+              (typeof resetAt === "number" && resetAt > now
+                ? ` · in ${formatUntil(resetAt, now, { withAbsolute: false })}`
+                : ""),
+          ),
+        ),
+      );
+      chunks.push(fg(T.text)("\n"));
+    };
+    renderWindow(
+      "5h limit",
+      go.openCodeGoFiveHourUsage,
+      go.openCodeGoFiveHourReset,
+    );
+    renderWindow(
+      "week",
+      go.openCodeGoWeeklyUsage,
+      go.openCodeGoWeeklyReset,
+    );
+    renderWindow(
+      "30 days",
+      go.openCodeGoMonthlyUsage,
+      go.openCodeGoMonthlyReset,
+    );
+    if (typeof go.openCodeGoWorkspaceId === "string") {
+      const ws = go.openCodeGoWorkspaceId.trim();
+      if (ws) {
+        const cookieSet =
+          typeof go.openCodeGoAuthCookie === "string" &&
+          go.openCodeGoAuthCookie.trim() !== "";
+        chunks.push(
+          ...labelValue(
+            "workspace",
+            `${ws} · cred: ${cookieSet ? "set" : "env"}`,
+            T.textMuted,
+          ),
+        );
+      }
+    }
   } else {
     const c = account as CodexAccountMetadata;
     if (c.planType) {
@@ -1418,6 +1641,16 @@ function asString(v: unknown): string | undefined {
   return typeof v === "string" ? v : undefined;
 }
 
+/** opencode-go dashboard window → persisted shape (both fields required). */
+function openCodeGoWindow(
+  w: Record<string, unknown> | undefined,
+): { usagePercent: number; resetAt: number } | undefined {
+  const usagePercent = asFiniteNumber(w?.usagePercent);
+  const resetAt = asFiniteNumber(w?.resetAt);
+  if (usagePercent === undefined || resetAt === undefined) return undefined;
+  return { usagePercent, resetAt };
+}
+
 /**
  * Launch the tabbed multi-provider TUI.
  * Tabs: [xAI] [Codex] — switch with Tab / 1 / 2.
@@ -1435,6 +1668,7 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
     xai: stickyIndex(manager.providerView("xai")),
     codex: stickyIndex(manager.providerView("codex")),
     kiro: stickyIndex(manager.providerView("kiro")),
+    "opencode-go": stickyIndex(manager.providerView("opencode-go")),
   });
   let gens: LiveGeneration = createLiveGeneration();
   let alive = true;
@@ -1450,6 +1684,7 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
   let editContext: EditContext | null = null;
   let kiroWizard: KiroAddWizard | null = null;
   let codexWizard: CodexAddWizard | null = null;
+  let openCodeGoWizard: OpenCodeGoAddWizard | null = null;
   let addAbort: AbortController | null = null;
   let focusPane: "accounts" | "actions" | "edit" = "accounts";
   let actionMenuLevel: ActionMenuLevel = createActionMenuLevel();
@@ -1834,7 +2069,12 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
       void renderTabBar(activeTab);
       safeSetContent(
         headerText,
-        styledHeader(accounts, stickyIndex(v), now, activeTab),
+        styledHeader(
+          accounts,
+          stickyIndex(v),
+          now,
+          activeTab,
+        ),
       );
       safeSetContent(
         statusText,
@@ -1888,6 +2128,7 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
     editContext = null;
     kiroWizard = null;
     codexWizard = null;
+    openCodeGoWizard = null;
     editInput.visible = false;
     editInput.value = "";
     editInput.blur();
@@ -2348,6 +2589,139 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
     }
   }
 
+  function beginOpenCodeGoKeyWizard(): void {
+    if (activeTab !== "opencode-go" || busy || addAbort) return;
+    if (editMode) cancelEdit();
+    confirmation = clearConfirmation();
+    openCodeGoWizard = { step: "key" };
+    showWizardInput(
+      "sk_…",
+      "OpenCode Go API key — Enter next · Esc cancel",
+    );
+  }
+
+  /**
+   * opencode-go add is a static API-key paste (no OAuth). The key is stored in
+   * both refreshToken (persisted boundary) and accessToken (what the plugin /
+   * TUI rotate mirror into OpenCode's auth.json). accountId is a hash of the
+   * key so re-pasting the same key is rejected by the pool's dedupe.
+   *
+   * Steps: key → label → workspace id (optional) → auth cookie (optional).
+   * Skipping workspace/cookie stores neither; the probe falls back to env.
+   */
+  async function advanceOpenCodeGoWizard(): Promise<void> {
+    if (!openCodeGoWizard) {
+      cancelEdit();
+      return;
+    }
+    const raw = editInput.value;
+    const value = raw.trim();
+    try {
+      if (openCodeGoWizard.step === "key") {
+        if (!value) {
+          setStatus({ text: "API key is required", tone: "err" });
+          return;
+        }
+        openCodeGoWizard = { step: "label", apiKey: value };
+        showWizardInput(
+          "(blank = derived)",
+          "Label (optional) — Enter next · Esc cancel",
+        );
+        return;
+      }
+      if (openCodeGoWizard.step === "label") {
+        openCodeGoWizard = {
+          step: "workspace",
+          apiKey: openCodeGoWizard.apiKey,
+          label: value || undefined,
+        };
+        showWizardInput(
+          "wrk_… (blank = env fallback)",
+          "Workspace ID (optional) — Enter next · Esc cancel",
+        );
+        return;
+      }
+      if (openCodeGoWizard.step === "workspace") {
+        openCodeGoWizard = {
+          step: "cookie",
+          apiKey: openCodeGoWizard.apiKey,
+          label: openCodeGoWizard.label,
+          workspaceId: value || undefined,
+        };
+        showWizardInput(
+          "auth cookie value (blank = env fallback)",
+          "Dashboard auth cookie (optional) — Enter add · Esc cancel",
+        );
+        return;
+      }
+      const apiKey = openCodeGoWizard.apiKey ?? "";
+      const label = openCodeGoWizard.label;
+      const workspaceId = openCodeGoWizard.workspaceId;
+      const cookieRaw = value ? normalizeAuthCookie(value) : "";
+      const authCookie = cookieRaw.length > 0 ? cookieRaw : undefined;
+      const accountId = createHash("sha256")
+        .update(apiKey)
+        .digest("hex")
+        .slice(0, 24);
+      const account: OpenCodeGoAccountMetadata = {
+        provider: "opencode-go",
+        accountId,
+        email: undefined,
+        label,
+        tags: [],
+        refreshToken: apiKey,
+        accessToken: apiKey,
+        expiresAt: Number.MAX_SAFE_INTEGER,
+        enabled: true,
+        priority: 0,
+        addedAt: Date.now(),
+        lastUsed: 0,
+        lastSwitchReason: "initial",
+        subscriptionStatus: "active",
+        flaggedForRemoval: false,
+        entitlementBlocked: false,
+      };
+      // Only include per-account dashboard cred when actually entered, so the
+      // schema `.optional()` boundary stays clean (omitted → env fallback).
+      if (workspaceId) account.openCodeGoWorkspaceId = workspaceId;
+      if (authCookie) account.openCodeGoAuthCookie = authCookie;
+      cancelEdit();
+      busy = true;
+      try {
+        const v = manager.providerView("opencode-go");
+        await v.add(account);
+        restoreSelectionById("opencode-go", accountId);
+        setStatus({
+          text: `added ${shortAccountId(accountId)}`,
+          tone: "ok",
+        });
+        refreshViews();
+        // best-effort follow-up probe — never fails the add
+        try {
+          const acc = v.get(accountId);
+          if (acc) await probeAndRecord("opencode-go", v, acc);
+          if (activeTab === "opencode-go") refreshViews();
+        } catch {
+          /* ignore probe after add */
+        }
+      } catch (err) {
+        setStatus({
+          text: `add failed: ${(err as Error).message}`,
+          tone: "err",
+        });
+        refreshViews();
+      } finally {
+        busy = false;
+      }
+    } catch (err) {
+      setStatus({
+        text: `wizard failed: ${(err as Error).message}`,
+        tone: "err",
+      });
+      cancelEdit();
+    }
+  }
+
   function beginEdit(field: EditField): void {
     const acc = selectedAccount();
     if (!acc) return;
@@ -2397,6 +2771,10 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
     }
     if (kiroWizard) {
       await advanceKiroWizard();
+      return;
+    }
+    if (openCodeGoWizard) {
+      await advanceOpenCodeGoWizard();
       return;
     }
     if (!editContext) {
@@ -2670,6 +3048,10 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
   tabText.onMouseDown = onTabMouseDown;
 
   let lastProbeError = "";
+  /** Set when the last probe succeeded but found no Go subscription on the
+   * scraped workspace (dashboard reached, all windows missing). Survives the
+   * generic "refreshed" status so the user sees the diagnostic. */
+  let lastProbeWarning = "";
 
   function shortProbeError(err: unknown): string {
     const msg = err instanceof Error ? err.message : String(err);
@@ -2709,6 +3091,7 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
     const ad = ADAPTERS[tab];
     if (!ad.probeQuota) return "failure";
     lastProbeError = "";
+    lastProbeWarning = "";
     try {
       const orgId =
         account.provider === "codex"
@@ -2718,6 +3101,10 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
         account.provider === "kiro"
           ? (account as KiroAccountMetadata)
           : undefined;
+      const go =
+        account.provider === "opencode-go"
+          ? (account as OpenCodeGoAccountMetadata)
+          : undefined;
       const probeArgs = {
         accountId: account.accountId,
         organizationId: orgId,
@@ -2725,6 +3112,8 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
         region: kiro?.region,
         oidcRegion: kiro?.oidcRegion,
         profileArn: kiro?.profileArn,
+        openCodeGoWorkspaceId: go?.openCodeGoWorkspaceId,
+        openCodeGoAuthCookie: go?.openCodeGoAuthCookie,
       };
 
       const runProbe = async (force: boolean) => {
@@ -2841,6 +3230,57 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
         return "success";
       }
 
+      if (tab === "opencode-go") {
+        // Static API key: probe is GET /v1/models with Bearer. A healthy
+        // probe touches lastUsed and optionally records the WORKSPACE
+        // dashboard quota snapshot (rolling 5h / weekly / monthly) on the
+        // probed account; a failed probe writes the real failure fields
+        // (coolingDownUntil + cooldownReason) so the account drops out of
+        // selection until it is rotated/re-added.
+        if (result.ok === false) {
+          const status = asFiniteNumber(result.status);
+          const reason: CooldownReason =
+            status === 401
+              ? "auth-failure"
+              : status === 429
+                ? "rate-limit"
+                : "network-error";
+          lastProbeError = asString(result.reason) ?? "probe failed";
+          await v.recordCooldown(
+            account.accountId,
+            reason,
+            Date.now() + 15 * 60_000,
+          );
+          return "failure";
+        }
+        await v.touchLastUsed(account.accountId);
+        const goQuota = asRecord(result.openCodeGoQuota);
+        if (goQuota && (goQuota.rolling || goQuota.weekly || goQuota.monthly)) {
+          await v.setOpenCodeGoQuota(account.accountId, {
+            rolling: openCodeGoWindow(asRecord(goQuota.rolling)),
+            weekly: openCodeGoWindow(asRecord(goQuota.weekly)),
+            monthly: openCodeGoWindow(asRecord(goQuota.monthly)),
+          });
+        } else if (
+          goQuota !== undefined &&
+          Object.keys(goQuota).length === 0
+        ) {
+          // The dashboard was reached (HTTP 200) but the workspace carries no
+          // Go subscription — the account is likely pointed at the wrong
+          // workspace (compare the header's ws: hint with the browser).
+          const wsId =
+            go?.openCodeGoWorkspaceId?.trim() ||
+            resolveDashboardCred()?.workspaceId ||
+            "?";
+          const warnText =
+            `probe ok but no Go subscription on workspace ${wsId} ` +
+            `(use set-cred to point at the right workspace)`;
+          lastProbeWarning = warnText;
+          setStatus({ text: warnText, tone: "warn" });
+        }
+        return "success";
+      }
+
       await v.recordUsage(account.accountId, {
         planType: asString(result.planType),
         primaryUsedPercent: asFiniteNumber(result.primaryUsedPercent),
@@ -2932,6 +3372,10 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
       case "tab-antigravity":
         switchTab("antigravity");
         return;
+      case "tab-opencode-go":
+        switchTab("opencode-go");
+        return;
+        return;
       case "tab-next":
         switchTab(nextTab(activeTab));
         return;
@@ -2978,9 +3422,58 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
           const id = acc.accountId;
           await view().moveToFront(id);
           await view().switchTo(id);
+          // opencode-go: the built-in provider reads the active key from
+          // auth.json on reload — mirror it so the displayed ACTIVE account
+          // matches the serving key.
+          if (
+            activeTab === "opencode-go" &&
+            typeof acc.accessToken === "string"
+          ) {
+            await writeActiveKeyToAuthJson(acc.accessToken);
+          }
           restoreSelectionById(activeTab, id);
           setStatus({
             text: `Active ${TAB_LABELS[activeTab]}: ${accountDisplayName(acc)}`,
+            tone: "ok",
+          });
+          refreshViews();
+        });
+        return;
+      }
+      case "rotate-active": {
+        // opencode-go only: pick the next eligible account, mirror its key
+        // into OpenCode's auth.json (the built-in provider reads it on reload).
+        if (activeTab !== "opencode-go") return;
+        await withBusy(async () => {
+          const stickyId = manager.sticky("opencode-go");
+          const attempted = stickyId
+            ? new Set<string>([stickyId])
+            : new Set<string>();
+          const next = manager.selectAccount(
+            "opencode-go",
+            attempted,
+            "round-robin",
+          );
+          if (!next) {
+            setStatus({
+              text: "No other account to rotate to",
+              tone: "warn",
+            });
+            return;
+          }
+          // selectAccount already set the sticky key (round-robin, no promote);
+          // switching again would promote and collapse rotation to a 2-cycle.
+          if (typeof next.accessToken !== "string") {
+            setStatus({
+              text: `Rotated to ${next.label ?? next.accountId}, but it has no access token — cannot write auth.json`,
+              tone: "err",
+            });
+            return;
+          }
+          await writeActiveKeyToAuthJson(next.accessToken);
+          restoreSelectionById("opencode-go", next.accountId);
+          setStatus({
+            text: `Rotated to ${next.label ?? next.accountId}. Restart opencode for the new key to take effect.`,
             tone: "ok",
           });
           refreshViews();
@@ -3163,21 +3656,25 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
           const acc = selectedAccount();
           if (!acc) return;
           const outcome = await probeAndRecord(activeTab, view(), acc);
+          const warn = lastProbeWarning;
           setStatus({
             text:
-              outcome === "success"
+              warn ??
+              (outcome === "success"
                 ? "refreshed"
                 : outcome === "partial"
                   ? "partial refresh"
                   : lastProbeError
                     ? `refresh failed: ${lastProbeError}`
-                    : "refresh failed",
+                    : "refresh failed"),
             tone:
-              outcome === "success"
-                ? "ok"
-                : outcome === "partial"
-                  ? "warn"
-                  : "err",
+              warn
+                ? "warn"
+                : outcome === "success"
+                  ? "ok"
+                  : outcome === "partial"
+                    ? "warn"
+                    : "err",
           });
           refreshViews();
         });
@@ -3200,12 +3697,20 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
             if (outcome === "failure") fail++;
             else ok++;
           }
+          const warn = lastProbeWarning;
           setStatus({
             text:
-              fail && lastFail
+              warn ??
+              (fail && lastFail
                 ? `refreshed ${ok} · ${fail} failed (${lastFail})`
-                : `refreshed ${ok}${fail ? ` · ${fail} failed` : ""}`,
-            tone: fail && ok ? "warn" : fail ? "err" : "ok",
+                : `refreshed ${ok}${fail ? ` · ${fail} failed` : ""}`),
+            tone: warn
+              ? "warn"
+              : fail && ok
+                ? "warn"
+                : fail
+                  ? "err"
+                  : "ok",
           });
           if (tab === activeTab) refreshViews();
         });
@@ -3241,22 +3746,32 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
               ?.accountId,
             antigravity: manager.providerView("antigravity").list()[selection.antigravity!]
               ?.accountId,
+            "opencode-go":
+              manager.providerView("opencode-go").list()[
+                selection["opencode-go"]!
+              ]?.accountId,
           };
           gens = bumpGeneration(gens, "xai");
           gens = bumpGeneration(gens, "codex");
           gens = bumpGeneration(gens, "kiro");
           gens = bumpGeneration(gens, "antigravity");
+          gens = bumpGeneration(gens, "opencode-go");
           await manager.reloadFromDisk();
           restoreSelectionById("xai", keep.xai);
           restoreSelectionById("codex", keep.codex);
           restoreSelectionById("kiro", keep.kiro);
           restoreSelectionById("antigravity", keep.antigravity);
+          restoreSelectionById("opencode-go", keep["opencode-go"]);
           setStatus({ text: "reloaded from disk", tone: "ok" });
           refreshViews();
         });
         return;
       }
       case "add-device":
+        if (activeTab === "opencode-go") {
+          beginOpenCodeGoKeyWizard();
+          return;
+        }
         if (activeTab === "kiro") {
           beginKiroWizard("idc");
           return;
@@ -3268,6 +3783,10 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
         void startAdd("device");
         return;
       case "add-browser":
+        if (activeTab === "opencode-go") {
+          beginOpenCodeGoKeyWizard();
+          return;
+        }
         if (activeTab === "kiro") {
           beginKiroWizard("idc");
           return;
@@ -3283,6 +3802,16 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
           return;
         }
         void start9RouterImport();
+        return;
+      case "add-opencode-go-api-key":
+        if (activeTab !== "opencode-go") {
+          setStatus({
+            text: "switch to OpenCode Go tab for API key add",
+            tone: "warn",
+          });
+          return;
+        }
+        beginOpenCodeGoKeyWizard();
         return;
       case "add-kiro-idc":
         if (activeTab !== "kiro") {
@@ -3671,6 +4200,7 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
       action !== "tab-codex" &&
       action !== "tab-kiro" &&
       action !== "tab-antigravity" &&
+      action !== "tab-opencode-go" &&
       action !== "tab-next"
     ) {
       return;

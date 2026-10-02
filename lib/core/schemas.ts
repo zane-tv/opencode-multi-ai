@@ -4,16 +4,22 @@ import * as z from "zod";
  * Zod schemas for the unified multi-provider account pool.
  * These schemas are the validation boundary for persisted account storage.
  *
- * v3: discriminated by `provider: "xai" | "codex" | "kiro"`, sticky is
- * per-provider accountId (not a shared activeIndex). Legacy v1 and v2 decoders
- * are kept for migration only.
+ * v3: discriminated by `provider: "xai" | "codex" | "kiro" | "opencode-go"`,
+ * sticky is per-provider accountId (not a shared activeIndex). Legacy v1 and
+ * v2 decoders are kept for migration only.
  *
  * YAGNI-trimmed: do NOT add healthScore, tokenBucket, activeIndexByModel,
  * or activeIndexByFamily here.
  */
 
 /** Provider identity for accounts and sticky pointers. */
-export const PROVIDER_KINDS = ["xai", "codex", "kiro", "antigravity"] as const;
+export const PROVIDER_KINDS = [
+  "xai",
+  "codex",
+  "kiro",
+  "antigravity",
+  "opencode-go",
+] as const;
 export const ProviderKindSchema = z.enum(PROVIDER_KINDS);
 export type ProviderKind = z.infer<typeof ProviderKindSchema>;
 
@@ -318,12 +324,50 @@ export const AntigravityAccountMetadataSchema = z
 export const KiroAccountMetadataSchema =
   KiroAccountMetadataObjectSchema.superRefine(validateKiroAccount);
 
+/**
+ * opencode-go static API key accounts (no OAuth).
+ * The key is stored in BOTH `refreshToken` (required at the persisted
+ * boundary) and `accessToken` (what the plugin mirrors into OpenCode's
+ * auth.json on rotation). No per-key quota/usage semantics — rotation is
+ * manual config-file rotation handled by the plugin.
+ *
+ * The `openCodeGo*Usage` / `openCodeGo*Reset` fields hold a WORKSPACE-LEVEL
+ * dashboard quota snapshot (rolling 5h / weekly / monthly windows). Quota is
+ * shared across all pool keys, so the snapshot is stored on whichever account
+ * was probed last; the TUI reads it from the sticky account for tab-level
+ * display (never per-account).
+ */
+export const OpenCodeGoAccountMetadataSchema = z
+  .object({
+    provider: z.literal("opencode-go"),
+    ...AccountBaseFields,
+    subscriptionStatus: SubscriptionStatusSchema.default("active"),
+    /** Workspace ID for the Go dashboard (`wrk_XXXX`). Per-account so multiple subscriptions are supported. */
+    openCodeGoWorkspaceId: z.string().optional(),
+    /** Auth cookie for the Go dashboard (raw `auth` cookie value, WITHOUT the `auth=` prefix). SENSITIVE — never logged. */
+    openCodeGoAuthCookie: z.string().optional(),
+    /** Dashboard usage % of the 5-hour rolling window (0-100). */
+    openCodeGoFiveHourUsage: z.number().min(0).max(100).optional(),
+    /** Epoch ms when the 5-hour rolling window resets. */
+    openCodeGoFiveHourReset: z.number().int().positive().optional(),
+    /** Dashboard usage % of the weekly window (0-100). */
+    openCodeGoWeeklyUsage: z.number().min(0).max(100).optional(),
+    /** Epoch ms when the weekly window resets. */
+    openCodeGoWeeklyReset: z.number().int().positive().optional(),
+    /** Dashboard usage % of the monthly window (0-100). */
+    openCodeGoMonthlyUsage: z.number().min(0).max(100).optional(),
+    /** Epoch ms when the monthly window resets. */
+    openCodeGoMonthlyReset: z.number().int().positive().optional(),
+  })
+  .strict();
+
 export const AccountMetadataSchema = z
   .discriminatedUnion("provider", [
     XaiAccountMetadataSchema,
     CodexAccountMetadataSchema,
     KiroAccountMetadataObjectSchema,
     AntigravityAccountMetadataSchema,
+    OpenCodeGoAccountMetadataSchema,
   ])
   .superRefine((account, ctx) => {
     if (account.provider === "kiro") validateKiroAccount(account, ctx);
@@ -334,6 +378,9 @@ export type CodexAccountMetadata = z.infer<typeof CodexAccountMetadataSchema>;
 export type KiroAccountMetadata = z.infer<typeof KiroAccountMetadataSchema>;
 export type AntigravityAccountMetadata = z.infer<
   typeof AntigravityAccountMetadataSchema
+>;
+export type OpenCodeGoAccountMetadata = z.infer<
+  typeof OpenCodeGoAccountMetadataSchema
 >;
 export type AccountOf<P extends ProviderKind> = Extract<
   AccountMetadata,
@@ -371,6 +418,7 @@ export const AccountStorageSchema = z.object({
       codex: z.string().optional(),
       kiro: z.string().optional(),
       antigravity: z.string().optional(),
+      opencodeGo: z.string().optional(),
     })
     .default({}),
 });

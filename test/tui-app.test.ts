@@ -46,6 +46,32 @@ const browserLoginCodex = vi.fn();
 const HOUR = 3_600_000;
 const FIXED_NOW = Date.UTC(2026, 6, 16, 12, 0, 0);
 
+/** opencode-go dashboard env vars (header quota row depends on them). */
+const GO_ENV = [
+  "MULTI_AI_OPENCODE_GO_WORKSPACE_ID",
+  "MULTI_AI_OPENCODE_GO_AUTH_COOKIE",
+  "OPENCODE_GO_WORKSPACE_ID",
+  "OPENCODE_GO_AUTH_COOKIE",
+] as const;
+
+/** Run a test with the opencode-go dashboard env vars unset (deterministic). */
+async function withCleanGoEnv<T>(fn: () => Promise<T>): Promise<T> {
+  const saved = new Map<string, string | undefined>();
+  for (const key of GO_ENV) {
+    saved.set(key, process.env[key]);
+    delete process.env[key];
+  }
+  try {
+    return await fn();
+  } finally {
+    for (const key of GO_ENV) {
+      const v = saved.get(key);
+      if (v === undefined) delete process.env[key];
+      else process.env[key] = v;
+    }
+  }
+}
+
 function tmpPath(kind: string): string {
   return path.join(
     os.tmpdir(),
@@ -109,6 +135,38 @@ function makeCodex(
   } as AccountMetadata;
 }
 
+/** Static-key account: accessToken mirrors what the rotate tool writes to auth.json. */
+function makeOpenCodeGo(
+  id: string,
+  overrides: Partial<AccountMetadata> = {},
+): AccountMetadata {
+  return {
+    provider: "opencode-go",
+    accountId: id,
+    tags: [],
+    refreshToken: `key-${id}`,
+    accessToken: `key-${id}`,
+    expiresAt: Number.MAX_SAFE_INTEGER,
+    enabled: true,
+    priority: 0,
+    addedAt: FIXED_NOW - HOUR,
+    lastUsed: 0,
+    lastSwitchReason: "initial",
+    subscriptionStatus: "active",
+    flaggedForRemoval: false,
+    entitlementBlocked: false,
+    ...overrides,
+  } as AccountMetadata;
+}
+
+/** Minimal unsigned JWT for import tests; signature segment is ignored by decodeJwt. */
+function fakeJwt(payload: Record<string, unknown>, sigLen = 64): string {
+  const header = Buffer.from(
+    JSON.stringify({ alg: "none", typ: "JWT" }),
+  ).toString("base64url");
+  const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  return `${header}.${body}.${"s".repeat(sigLen)}`;
+}
 async function seedStore(storePath: string): Promise<void> {
   await saveAccounts(
     {
@@ -1394,6 +1452,191 @@ const hasOpenTuiFfi = typeof (globalThis as { Bun?: unknown }).Bun !== "undefine
     await s.renderOnce();
     await s.flush().catch(() => undefined);
     expect(frameOf(s)).toMatch(/work-codex|Codex|codex/i);
+  });
+
+  it("4 switches to the OpenCode Go tab; help shows API-key paste + rotate", async () => {
+    harness = await launchTui({ storePath, settingsPath });
+    const s = harness.setup();
+    s.mockInput.pressKey("4");
+    await s.renderOnce();
+    await s.flush().catch(() => undefined);
+    expect(frameOf(s)).toMatch(/OpenCode Go/i);
+    expect(frameOf(s)).not.toMatch(/work-xai/i);
+
+    s.mockInput.pressKey("?");
+    await s.renderOnce();
+    const help = frameOf(s);
+    expect(help).toMatch(/Paste API key|sk_/i);
+    expect(help).toMatch(/Rotate/i);
+    // OpenCode Go help must not advertise OAuth flows of other agents.
+    expect(help).not.toMatch(/OAuth JSON import|op-codex import/i);
+    expect(help).not.toMatch(/kiro-cli|Builder ID/i);
+  });
+
+  it("opencode-go key paste add: hash accountId, label, per-account dashboard cred, persisted token", async () => {
+    harness = await launchTui({ storePath, settingsPath });
+    const { manager, setup } = harness;
+    const s = setup();
+    s.mockInput.pressKey("4");
+    await s.renderOnce();
+    s.mockInput.pressKey("a");
+    await s.renderOnce();
+    await new Promise((r) => setTimeout(r, 30));
+    await s.mockInput.typeText("sk_live_paste_123");
+    s.mockInput.pressEnter();
+    await s.renderOnce();
+    await new Promise((r) => setTimeout(r, 30));
+    await s.mockInput.typeText("work-go");
+    s.mockInput.pressEnter();
+    await s.renderOnce();
+    await new Promise((r) => setTimeout(r, 30));
+    await s.mockInput.typeText("wrk_sub_a");
+    s.mockInput.pressEnter();
+    await s.renderOnce();
+    await new Promise((r) => setTimeout(r, 30));
+    await s.mockInput.typeText("auth=cookie-a");
+    s.mockInput.pressEnter();
+    await s.renderOnce();
+    await new Promise((r) => setTimeout(r, 250));
+
+    const accts = manager.providerView("opencode-go").list();
+    expect(accts.length).toBe(1);
+    const acc = accts[0]!;
+    expect(acc.refreshToken).toBe("sk_live_paste_123");
+    expect(acc.accessToken).toBe("sk_live_paste_123");
+    expect(acc.label).toBe("work-go");
+    expect(acc.accountId).toMatch(/^[0-9a-f]{24}$/);
+    const go = acc.provider === "opencode-go" ? acc : undefined;
+    expect(go?.openCodeGoWorkspaceId).toBe("wrk_sub_a");
+    expect(go?.openCodeGoAuthCookie).toBe("cookie-a");
+
+    // Esc in the wizard does not crash; a blank key is rejected.
+    s.mockInput.pressKey("a");
+    await s.renderOnce();
+    s.mockInput.pressEnter();
+    await s.renderOnce();
+    s.mockInput.pressEscape();
+    await s.renderOnce();
+    expect(manager.providerView("opencode-go").list().length).toBe(1);
+  });
+
+  it("opencode-go key paste add: skipping workspace + cookie yields a valid account (env fallback)", async () => {
+    harness = await launchTui({ storePath, settingsPath });
+    const { manager, setup } = harness;
+    const s = setup();
+    s.mockInput.pressKey("4");
+    await s.renderOnce();
+    s.mockInput.pressKey("a");
+    await s.renderOnce();
+    await new Promise((r) => setTimeout(r, 30));
+    await s.mockInput.typeText("sk_live_skip_creds");
+    s.mockInput.pressEnter();
+    await s.renderOnce();
+    await new Promise((r) => setTimeout(r, 30));
+    s.mockInput.pressEnter(); // skip label
+    await s.renderOnce();
+    await new Promise((r) => setTimeout(r, 30));
+    s.mockInput.pressEnter(); // skip workspace id
+    await s.renderOnce();
+    await new Promise((r) => setTimeout(r, 30));
+    s.mockInput.pressEnter(); // skip auth cookie → add
+    await s.renderOnce();
+    await new Promise((r) => setTimeout(r, 250));
+
+    const accts = manager.providerView("opencode-go").list();
+    expect(accts.length).toBe(1);
+    const acc = accts[0]!;
+    expect(acc.refreshToken).toBe("sk_live_skip_creds");
+    const go = acc.provider === "opencode-go" ? acc : undefined;
+    expect(go?.openCodeGoWorkspaceId).toBeUndefined();
+    expect(go?.openCodeGoAuthCookie).toBeUndefined();
+  });
+
+  it("opencode-go w rotates: picks next account and mirrors key into auth.json", async () => {
+    const xdg = tmpPath("xdg");
+    const prevXdg = process.env.XDG_DATA_HOME;
+    process.env.XDG_DATA_HOME = xdg;
+    try {
+      await saveAccounts(
+        {
+          version: 3,
+          accounts: [
+            makeOpenCodeGo("go-a", { priority: 10, accessToken: "key-a" }),
+            makeOpenCodeGo("go-b", { priority: 5, accessToken: "key-b" }),
+          ],
+          sticky: { opencodeGo: "go-a" },
+        },
+        storePath,
+      );
+      harness = await launchTui({ storePath, settingsPath });
+      const { manager, setup } = harness;
+      const s = setup();
+      s.mockInput.pressKey("4");
+      await s.renderOnce();
+      s.mockInput.pressKey("w");
+      await s.renderOnce();
+      await new Promise((r) => setTimeout(r, 300));
+
+      expect(manager.sticky("opencode-go")).toBe("go-b");
+      const authPath = path.join(xdg, "opencode", "auth.json");
+      const auth = JSON.parse(await fs.readFile(authPath, "utf8")) as Record<
+        string,
+        unknown
+      >;
+      expect(auth["opencode-go"]).toEqual({ type: "api", key: "key-b" });
+    } finally {
+      if (prevXdg === undefined) delete process.env.XDG_DATA_HOME;
+      else process.env.XDG_DATA_HOME = prevXdg;
+    }
+  });
+
+  it("opencode-go tab header shows the workspace quota from the sticky account", async () => {
+    await withCleanGoEnv(async () => {
+      await saveAccounts(
+        {
+          version: 3,
+          accounts: [
+            makeOpenCodeGo("go-a", {
+              priority: 10,
+              openCodeGoFiveHourUsage: 50,
+              openCodeGoFiveHourReset: Date.now() + 3 * HOUR + 20 * 60_000,
+              openCodeGoWeeklyUsage: 30,
+              openCodeGoWeeklyReset: Date.now() + 3 * 24 * HOUR,
+              openCodeGoMonthlyUsage: 20,
+              openCodeGoMonthlyReset: Date.now() + 20 * 24 * HOUR,
+            }),
+          ],
+          sticky: { opencodeGo: "go-a" },
+        },
+        storePath,
+      );
+      harness = await launchTui({ storePath, settingsPath });
+      const { setup } = harness;
+      const s = setup();
+      s.mockInput.pressKey("4");
+      await s.renderOnce();
+      await s.flush().catch(() => undefined);
+
+      const frame = frameOf(s);
+      expect(frame).toMatch(/5h: 50%/);
+      expect(frame).toMatch(/week: 30%/);
+      expect(frame).toMatch(/month: 20%/);
+    });
+  });
+
+  it("opencode-go tab header hints at quota env config when no snapshot exists", async () => {
+    await withCleanGoEnv(async () => {
+      harness = await launchTui({ storePath, settingsPath });
+      const { setup } = harness;
+      const s = setup();
+      s.mockInput.pressKey("4");
+      await s.renderOnce();
+      await s.flush().catch(() => undefined);
+
+      const frame = frameOf(s);
+      expect(frame).toMatch(/Press r to probe quota/);
+      expect(frame).toMatch(/MULTI_AI_OPENCODE_GO_WORKSPACE_ID/);
+    });
   });
 });
 

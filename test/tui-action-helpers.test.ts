@@ -6,10 +6,13 @@ import {
   actionMenuItems,
   actionMenuSelectValue,
   advanceConfirmation,
+  bindingAppliesTo,
+  bindingsForProvider,
   clearConfirmation,
   createActionMenuLevel,
   decodeTuiAction,
   normalizeTags,
+  footerBindingsForProvider,
   openActionMenuGroup,
   rowIndexFromMouse,
   type ConfirmationState,
@@ -100,7 +103,18 @@ describe("decodeTuiAction", () => {
     expect(decodeTuiAction(key({ name: "2" }))).toBe("tab-xai");
     expect(decodeTuiAction(key({ name: "3" }))).toBe("tab-kiro");
     expect(decodeTuiAction(key({ name: "4" }))).toBe("tab-antigravity");
+    expect(decodeTuiAction(key({ name: "5" }))).toBe("tab-opencode-go");
     expect(decodeTuiAction(key({ name: "tab" }))).toBe("tab-next");
+  });
+
+  it("maps w to rotate-active; other tabs still decode it globally", () => {
+    expect(decodeTuiAction(key({ name: "w" }))).toBe("rotate-active");
+    expect(decodeTuiAction(key({ sequence: "w" }))).toBe("rotate-active");
+    // Rotate must not steal existing refresh keys.
+    expect(decodeTuiAction(key({ name: "r" }))).toBe("refresh");
+    expect(decodeTuiAction(key({ name: "r", shift: true }))).toBe(
+      "refresh-all",
+    );
   });
 
   it("table: case-sensitive letter decode matrix", () => {
@@ -418,6 +432,12 @@ describe("action menu hierarchy", () => {
       "add-browser",
       "add-antigravity-9router",
     ]);
+
+    const goItems = actionMenuItems(level, "opencode-go");
+    const goActions = goItems
+      .filter((i) => i.kind === "action")
+      .map((i) => (i.kind === "action" ? i.binding.action : ""));
+    expect(goActions).toEqual(["add-opencode-go-api-key"]);
   });
 
   it("decodes kiro/codex add hotkeys", () => {
@@ -442,5 +462,104 @@ describe("action menu hierarchy", () => {
       "toggle-codex-fast",
     );
     expect(decodeTuiAction(key({ sequence: "F" }))).toBe("toggle-codex-fast");
+  });
+  it("hides Codex Fast top action on non-codex tabs", () => {
+    const codex = actionMenuItems(createActionMenuLevel(), "codex");
+    const xai = actionMenuItems(createActionMenuLevel(), "xai");
+    const kiro = actionMenuItems(createActionMenuLevel(), "kiro");
+    const ag = actionMenuItems(createActionMenuLevel(), "antigravity");
+    const go = actionMenuItems(createActionMenuLevel(), "opencode-go");
+    expect(
+      codex.some((i) => i.kind === "top" && i.action === "toggle-codex-fast"),
+    ).toBe(true);
+    expect(
+      xai.some((i) => i.kind === "top" && i.action === "toggle-codex-fast"),
+    ).toBe(false);
+    expect(
+      kiro.some((i) => i.kind === "top" && i.action === "toggle-codex-fast"),
+    ).toBe(false);
+    expect(
+      ag.some((i) => i.kind === "top" && i.action === "toggle-codex-fast"),
+    ).toBe(false);
+    expect(
+      go.some((i) => i.kind === "top" && i.action === "toggle-codex-fast"),
+    ).toBe(false);
+  });
+
+  it("footer bindings advertise only the active agent shortcuts", () => {
+    const codex = footerBindingsForProvider("codex");
+    const xai = footerBindingsForProvider("xai");
+    const kiro = footerBindingsForProvider("kiro");
+    const actions = (list: typeof codex) => list.map((b) => b.action);
+
+    expect(actions(codex)).toContain("add-device");
+    expect(actions(codex)).toContain("add-codex-json");
+    expect(actions(codex)).toContain("toggle-codex-fast");
+    expect(actions(codex)).not.toContain("add-kiro-api-key");
+
+    expect(actions(xai)).toContain("add-device");
+    expect(actions(xai)).not.toContain("add-codex-json");
+    expect(actions(xai)).not.toContain("toggle-codex-fast");
+    expect(actions(xai)).not.toContain("add-kiro-idc");
+
+    expect(actions(kiro)).toContain("add-kiro-idc");
+    expect(actions(kiro)).toContain("add-kiro-cli");
+    expect(actions(kiro)).not.toContain("add-device");
+    expect(actions(kiro)).not.toContain("toggle-codex-fast");
+
+    expect(codex.find((b) => b.key === "a")?.action).toBe("add-device");
+    expect(kiro.find((b) => b.key === "a")?.action).toBe("add-kiro-idc");
+    expect(codex.find((b) => b.key === "o")?.action).toBe("add-codex-json");
+    expect(kiro.find((b) => b.key === "o")?.action).toBe("add-kiro-json");
+  });
+
+  it("opencode-go footer advertises key add + rotate only on its tab", () => {
+    const go = footerBindingsForProvider("opencode-go");
+    const xai = footerBindingsForProvider("xai");
+    const goActions = go.map((b) => b.action);
+
+    expect(goActions).toContain("add-opencode-go-api-key");
+    expect(goActions).toContain("rotate-active");
+    expect(goActions).not.toContain("add-device");
+    expect(goActions).not.toContain("add-browser");
+    expect(go.find((b) => b.key === "a")?.action).toBe(
+      "add-opencode-go-api-key",
+    );
+    expect(go.find((b) => b.key === "w")?.action).toBe("rotate-active");
+    // No cross-tab leakage.
+    expect(xai.map((b) => b.action)).not.toContain("rotate-active");
+    expect(xai.map((b) => b.action)).not.toContain(
+      "add-opencode-go-api-key",
+    );
+  });
+
+  it("rotate-active renders only in the opencode-go account group", () => {
+    const go = openActionMenuGroup(createActionMenuLevel(), "account");
+    const goItems = actionMenuItems(go, "opencode-go");
+    expect(
+      goItems.some(
+        (i) => i.kind === "action" && i.binding.action === "rotate-active",
+      ),
+    ).toBe(true);
+    for (const provider of ["xai", "codex", "kiro", "antigravity"] as const) {
+      const items = actionMenuItems(go, provider);
+      expect(
+        items.some(
+          (i) => i.kind === "action" && i.binding.action === "rotate-active",
+        ),
+        `rotate-active must not render on ${provider}`,
+      ).toBe(false);
+    }
+  });
+
+  it("bindingAppliesTo / bindingsForProvider respect providers field", () => {
+    const fast = TUI_BINDINGS.find((b) => b.action === "toggle-codex-fast")!;
+    expect(bindingAppliesTo(fast, "codex")).toBe(true);
+    expect(bindingAppliesTo(fast, "xai")).toBe(false);
+    const switchB = TUI_BINDINGS.find((b) => b.action === "switch")!;
+    expect(bindingAppliesTo(switchB, "kiro")).toBe(true);
+    expect(
+      bindingsForProvider("xai").some((b) => b.action === "add-kiro-cli"),
+    ).toBe(false);
   });
 });

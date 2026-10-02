@@ -69,21 +69,41 @@ function fmtNum(n: number): string {
   return String(n);
 }
 
+import {
+  CLI_PROXY_BASE,
+  CLI_PROXY_ORIGIN,
+  CLI_PROXY_REFERER,
+  CLI_TOKEN_AUTH_VALUE,
+  cliClientVersion,
+  getXaiCliProxyMode,
+} from "../cli-proxy.js";
+
 /**
  * Cheap probe: tiny chat completion to refresh rate-limit headers.
- * Uses max_tokens=1 so cost stays minimal.
+ * Uses max_tokens=1 so cost stays minimal. In CLI-proxy mode the probe runs
+ * against cli-chat-proxy.grok.com with the grok CLI auth headers (api.x.ai
+ * rejects subscription tiers without API credits).
  */
 export async function probeAccountRateLimit(
   accessToken: string,
   model = "grok-4.5",
 ): Promise<RateLimitSnapshot> {
-  const res = await fetch("https://api.x.ai/v1/chat/completions", {
+  const cliProxy = getXaiCliProxyMode();
+  const base = cliProxy ? CLI_PROXY_BASE : "https://api.x.ai/v1";
+  const headers: Record<string, string> = {
+    authorization: `Bearer ${accessToken}`,
+    "content-type": "application/json",
+    accept: "application/json",
+  };
+  if (cliProxy) {
+    headers["x-xai-token-auth"] = CLI_TOKEN_AUTH_VALUE;
+    headers["x-grok-client-version"] = cliClientVersion();
+    headers["origin"] = CLI_PROXY_ORIGIN;
+    headers["referer"] = CLI_PROXY_REFERER;
+  }
+  const res = await fetch(`${base}/chat/completions`, {
     method: "POST",
-    headers: {
-      authorization: `Bearer ${accessToken}`,
-      "content-type": "application/json",
-      accept: "application/json",
-    },
+    headers,
     body: JSON.stringify({
       model,
       messages: [{ role: "user", content: "ping" }],

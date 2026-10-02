@@ -3,6 +3,7 @@ import type {
   AccountStorage,
   CodexAccountMetadata,
   KiroAccountMetadata,
+  OpenCodeGoAccountMetadata,
   ProviderKind,
   XaiAccountMetadata,
 } from "../core/schemas.js";
@@ -34,15 +35,22 @@ export type ActiveQuotaRow = {
 const METER_WIDTH = 10;
 const METER_PARTIALS = ["", "▏", "▎", "▍", "▌", "▋", "▊", "▉"] as const;
 
-const PROVIDER_ORDER: readonly ProviderKind[] = ["codex", "xai", "kiro"];
+const PROVIDER_ORDER: readonly ProviderKind[] = [
+  "codex",
+  "xai",
+  "kiro",
+  "opencode-go",
+];
 
 const PROVIDER_ID_TO_KIND: Readonly<Record<string, ProviderKind>> = {
   "codex-multi": "codex",
   "xai-multi": "xai",
   "kiro-multi": "kiro",
+  "opencode-go-multi": "opencode-go",
   codex: "codex",
   xai: "xai",
   kiro: "kiro",
+  "opencode-go": "opencode-go",
 };
 
 export function providerKindFromId(
@@ -125,6 +133,12 @@ export function isSidebarReady(
     }
   }
 
+  if (account.provider === "opencode-go") {
+    // Static-key accounts have no quota/usage semantics; dead is already
+    // handled by isSelectable, so the only extra skip is flagged-for-removal.
+    if (account.flaggedForRemoval) return false;
+  }
+
   return true;
 }
 
@@ -154,7 +168,21 @@ function remainingScore(account: AccountMetadata, now: number = Date.now()): num
     }
     return -1;
   }
+  if (account.provider === "opencode-go") {
+    // No quota/usage semantics — unknown remaining.
+    return -1;
+  }
   return -1;
+}
+
+/** Sticky key for a provider. v3 persists opencode-go under camelCase. */
+function stickyIdFor(
+  storage: AccountStorage,
+  provider: ProviderKind,
+): string | undefined {
+  return provider === "opencode-go"
+    ? storage.sticky?.opencodeGo
+    : storage.sticky?.[provider];
 }
 
 /**
@@ -175,7 +203,7 @@ export function findActiveAccount(
   if (pool.length === 0) return undefined;
 
   const ready = pool.filter((account) => isSidebarReady(account, now));
-  const stickyId = storage.sticky?.[provider];
+  const stickyId = stickyIdFor(storage, provider);
   const sticky = stickyId
     ? pool.find((account) => account.accountId === stickyId)
     : undefined;
@@ -292,6 +320,33 @@ function kiroRow(
   };
 }
 
+function opencodeGoRow(
+  account: OpenCodeGoAccountMetadata,
+  sessionActive: boolean,
+): ActiveQuotaRow {
+  return {
+    provider: "opencode-go",
+    providerLabel: "OpenCode Go",
+    displayName: accountDisplayName(account),
+    detail: openCodeGoStatusDetail(account),
+    meter: meterBar(undefined),
+    accountId: account.accountId,
+    sessionActive,
+  };
+}
+
+/** Short status for static-key accounts: active / cooling / dead. */
+function openCodeGoStatusDetail(account: OpenCodeGoAccountMetadata): string {
+  if (account.subscriptionStatus === "dead") return "dead";
+  if (
+    typeof account.coolingDownUntil === "number" &&
+    account.coolingDownUntil > Date.now()
+  ) {
+    return `cooling ${account.cooldownReason ?? "unknown"}`;
+  }
+  return "active";
+}
+
 export type BuildActiveQuotaOptions = {
   sessionProviderID?: string;
   sessionOnly?: boolean;
@@ -322,6 +377,9 @@ export function buildActiveQuotaRows(
         break;
       case "kiro":
         rows.push(kiroRow(acc, sessionActive));
+        break;
+      case "opencode-go":
+        rows.push(opencodeGoRow(acc, sessionActive));
         break;
     }
   }

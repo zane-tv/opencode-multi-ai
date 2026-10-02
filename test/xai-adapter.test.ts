@@ -1,6 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
 import { isProviderAdapter } from "../lib/core/adapter.js";
 import { xaiAdapter } from "../lib/providers/xai/index.js";
+import { resetXaiCliProxyForTests } from "../lib/providers/xai/cli-proxy.js";
 import {
   CLIENT_ID,
   REDIRECT_URI,
@@ -16,6 +22,26 @@ function transport() {
   }
   return xaiAdapter.transport;
 }
+
+const tempDirs: string[] = [];
+
+beforeEach(async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "multi-ai-xai-adapter-"));
+  tempDirs.push(dir);
+  // Hermetic settings file — the real one may carry xaiCliProxy: true.
+  process.env.MULTI_AI_SETTINGS_PATH = path.join(dir, "settings.json");
+  delete process.env.MULTI_AI_XAI_CLI_PROXY;
+  resetXaiCliProxyForTests();
+});
+
+afterEach(async () => {
+  delete process.env.MULTI_AI_SETTINGS_PATH;
+  delete process.env.MULTI_AI_XAI_CLI_PROXY;
+  resetXaiCliProxyForTests();
+  await Promise.all(
+    tempDirs.splice(0).map((d) => rm(d, { recursive: true, force: true })),
+  );
+});
 
 describe("xaiAdapter", () => {
   it("satisfies ProviderAdapter and identity fields", () => {

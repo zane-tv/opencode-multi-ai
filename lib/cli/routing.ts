@@ -29,7 +29,8 @@ export type CliCommand =
   | "unflag"
   | "priority"
   | "prune"
-  | "clean-dead";
+  | "clean-dead"
+  | "set-cred";
 
 export const SHARED_COMMANDS = [
   "help",
@@ -56,6 +57,11 @@ export const SHARED_COMMANDS = [
 ] as const satisfies readonly CliCommand[];
 
 export const CODEX_ONLY_COMMANDS = ["import"] as const satisfies readonly CliCommand[];
+
+/** Commands only meaningful for the opencode-go provider (forced alias or --provider). */
+export const OPENCODE_GO_ONLY_COMMANDS = [
+  "set-cred",
+] as const satisfies readonly CliCommand[];
 
 export const IMPORT_PROVIDERS = ["codex", "kiro"] as const satisfies readonly ProviderKind[];
 
@@ -87,12 +93,15 @@ export const PROVIDER_REQUIRED_COMMANDS = new Set<string>([
   "priority",
   "prune",
   "clean-dead",
+  "set-cred",
 ]);
 
 /**
  * Infer forced provider from process argv0 / bin name.
  * - op-xai / xai-multi / opencode-multi-xai → xai
  * - op-codex / codex-multi / opencode-multi-codex → codex
+ * - op-kiro / kiro-multi / opencode-multi-kiro → kiro
+ * - op-opencode-go / opencode-go-multi → opencode-go
  * - op-ai / opencode-multi-ai / bare scripts/cli.ts → undefined (use --provider)
  */
 export function resolveProviderFromArgv0(
@@ -132,6 +141,14 @@ export function resolveProviderFromArgv0(
   ) {
     return "kiro";
   }
+  if (
+    base.includes("op-opencode-go") ||
+    base.includes("opencode-go-multi") ||
+    base === "opencode-multi-opencode-go" ||
+    base.endsWith("multi-opencode-go")
+  ) {
+    return "opencode-go";
+  }
   return undefined;
 }
 
@@ -144,6 +161,7 @@ export function parseProviderFlag(
   if (v === "xai" || v === "x" || v === "grok" || v === "supergrok") return "xai";
   if (v === "codex" || v === "c" || v === "chatgpt" || v === "openai") return "codex";
   if (v === "kiro" || v === "k" || v === "codewhisperer") return "kiro";
+  if (v === "opencode-go" || v === "go" || v === "g") return "opencode-go";
   return undefined;
 }
 
@@ -221,6 +239,12 @@ export function isKnownCommand(
     command === "import" &&
     (provider === undefined ||
       (IMPORT_PROVIDERS as readonly string[]).includes(provider))
+  ) {
+    return true;
+  }
+  if (
+    (OPENCODE_GO_ONLY_COMMANDS as readonly string[]).includes(command) &&
+    (provider === undefined || provider === "opencode-go")
   ) {
     return true;
   }

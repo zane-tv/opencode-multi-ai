@@ -64,7 +64,7 @@ export const LEGACY_PLUGIN_PACKAGES = [
 ] as const;
 
 /** Built-in provider ids we must never write or overwrite. */
-export const BUILTIN_PROVIDER_IDS = ["xai", "openai"] as const;
+export const BUILTIN_PROVIDER_IDS = ["xai", "openai", "opencode-go"] as const;
 
 const XAI_PROVIDER_NPM = "@ai-sdk/xai";
 const XAI_PROVIDER_NAME = "Grok Multi-Account";
@@ -92,6 +92,7 @@ export const PLUGIN_PACKAGE_SUBPATHS = [
   `${PLUGIN_PACKAGE}/lib/plugin/codex`,
   `${PLUGIN_PACKAGE}/lib/plugin/kiro`,
   `${PLUGIN_PACKAGE}/lib/plugin/antigravity`,
+  `${PLUGIN_PACKAGE}/lib/plugin/opencode-go`,
 ] as const;
 
 export interface ProviderChange {
@@ -110,6 +111,16 @@ export interface InstallResult {
   legacyPluginsRemoved: string[];
   skillsInstalled?: string[];
   config: Record<string, unknown>;
+  /**
+   * opencode-go install outcome. It is a BUILT-IN OpenCode provider: no
+   * `provider.opencode-go` entry is ever written (built-in rule). The plugin
+   * subpath (`lib/plugin/opencode-go`) only registers the `opencodeGoRotate`
+   * tool and is recognized / deduped like the other plugin subpaths.
+   */
+  opencodeGo: {
+    providerEntryWritten: false;
+    pluginPath: string;
+  };
 }
 
 export interface InstallOptions {
@@ -217,10 +228,14 @@ export function isOurPluginKey(key: string, desired: string[] = []): boolean {
   if (key.includes(`${path.sep}lib${path.sep}plugin${path.sep}xai`)) return true;
   if (key.includes(`${path.sep}lib${path.sep}plugin${path.sep}codex`)) return true;
   if (key.includes(`${path.sep}lib${path.sep}plugin${path.sep}kiro`)) return true;
+  if (key.includes(`${path.sep}lib${path.sep}plugin${path.sep}opencode-go`)) {
+    return true;
+  }
   if (
     key.includes("/lib/plugin/xai") ||
     key.includes("/lib/plugin/codex") ||
-    key.includes("/lib/plugin/kiro")
+    key.includes("/lib/plugin/kiro") ||
+    key.includes("/lib/plugin/opencode-go")
   ) {
     return true;
   }
@@ -320,9 +335,14 @@ function pathsReferToSamePlugin(a: string, b: string): boolean {
   const bCodex = nb.includes("plugin/codex") || nb.endsWith("/codex");
   const aKiro = na.includes("plugin/kiro") || na.endsWith("/kiro");
   const bKiro = nb.includes("plugin/kiro") || nb.endsWith("/kiro");
+  const aOpenCodeGo =
+    na.includes("plugin/opencode-go") || na.endsWith("/opencode-go");
+  const bOpenCodeGo =
+    nb.includes("plugin/opencode-go") || nb.endsWith("/opencode-go");
   if (aXai && bXai) return true;
   if (aCodex && bCodex) return true;
   if (aKiro && bKiro) return true;
+  if (aOpenCodeGo && bOpenCodeGo) return true;
   return false;
 }
 
@@ -667,6 +687,13 @@ export async function installProvider(
   const kiro = await mergeKiroProvider(config);
   const antigravity = await mergeAntigravityProvider(config);
 
+  // opencode-go is BUILT-IN: catalog provides npm/baseURL/env and auth.json
+  // provides the key — so there is deliberately NO mergeOpenCodeGoProvider
+  // and NO provider.opencode-go entry here (never write built-ins). The
+  // plugin subpath (registered via the package-root plugin entry or an
+  // explicit subpath entry) only exposes the opencodeGoRotate tool.
+  const opencodeGoPluginPath = `${PLUGIN_PACKAGE}/lib/plugin/opencode-go`;
+
   // Guard: never write built-in keys as our multi providers.
   if (isPlainObject(config.provider)) {
     for (const builtin of BUILTIN_PROVIDER_IDS) {
@@ -727,6 +754,10 @@ export async function installProvider(
     legacyPluginsRemoved,
     skillsInstalled,
     config,
+    opencodeGo: {
+      providerEntryWritten: false,
+      pluginPath: opencodeGoPluginPath,
+    },
   };
 }
 
@@ -759,6 +790,10 @@ function printSummary(result: InstallResult): void {
       console.log(`  = provider "${p.id}" already configured`);
     }
   }
+  console.log(
+    "  opencode-go: built-in provider (no opencode.json entry written); " +
+      "rotation plugin (opencodeGoRotate) registered via the plugin entry",
+  );
 
   if (legacyPluginsRemoved.length > 0) {
     console.log(
@@ -784,7 +819,11 @@ function printSummary(result: InstallResult): void {
   console.log(
     "Done. Restart OpenCode, then `opencode auth login` for xai-multi / codex-multi / kiro-multi.",
   );
-  console.log("CLI: op-ai tui | op-xai list | op-codex list | op-kiro list");
+  console.log(
+    "OpenCode Go: add keys via `op-opencode-go add --api-key …`, rotate via opencodeGoRotate,",
+  );
+  console.log("  then restart opencode for the new auth.json key to take effect.");
+  console.log("CLI: op-ai tui | op-xai list | op-codex list | op-kiro list | op-opencode-go list");
 }
 
 function parseArgs(argv: string[]): {

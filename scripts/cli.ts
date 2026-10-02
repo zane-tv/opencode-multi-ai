@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Unified multi-AI CLI (op-ai / op-xai / op-codex / op-kiro).
+ * Unified multi-AI CLI (op-ai / op-xai / op-codex / op-kiro / op-opencode-go).
  *
  * Usage:
  *   op-ai                        Open tabbed TUI (default)
@@ -9,8 +9,11 @@
  *   op-xai list                  Forced xAI (alias)
  *   op-codex import --file ...
  *   op-kiro import --api-key ksk_…
+ *   op-opencode-go add --api-key …
  *   bun scripts/cli.ts help
  */
+
+import crypto from "node:crypto";
 
 import type { ToolContext } from "@opencode-ai/plugin";
 
@@ -22,6 +25,7 @@ import type { ProviderKind } from "../lib/core/schemas.js";
 import {
   buildCodexTools,
   buildKiroTools,
+  buildOpenCodeGoTools,
   buildTools,
   buildXaiTools,
 } from "../lib/tools/registry.js";
@@ -35,6 +39,7 @@ import {
   strFlag,
   toolNameFor,
 } from "../lib/cli/routing.js";
+import { normalizeAuthCookie } from "../lib/providers/opencode-go/dashboard.js";
 
 function usage(forced?: ProviderKind): string {
   const bin =
@@ -44,14 +49,16 @@ function usage(forced?: ProviderKind): string {
         ? "op-codex"
         : forced === "kiro"
           ? "op-kiro"
-          : "op-ai";
+          : forced === "opencode-go"
+            ? "op-opencode-go"
+            : "op-ai";
   const providerHint =
     forced === undefined
-      ? "  --provider xai|codex|kiro   Required for mutating commands on op-ai"
+      ? "  --provider xai|codex|kiro|opencode-go   Required for mutating commands on op-ai"
       : `  (provider forced: ${forced} via bin name)`;
 
   const lines = [
-    `${bin} — SuperGrok + ChatGPT/Codex + Kiro multi-account CLI for OpenCode`,
+    `${bin} — SuperGrok + ChatGPT/Codex + Kiro + OpenCode Go multi-account CLI for OpenCode`,
     "",
     "Usage:",
     `  ${bin}                     Open TUI (default)`,
@@ -60,11 +67,11 @@ function usage(forced?: ProviderKind): string {
     "",
     "Provider:",
     providerHint,
-    "  Aliases: op-xai / xai-multi → xai;  op-codex / codex-multi → codex;  op-kiro / kiro-multi → kiro",
+    "  Aliases: op-xai / xai-multi → xai;  op-codex / codex-multi → codex;  op-kiro / kiro-multi → kiro;  op-opencode-go → opencode-go",
     "",
     "Commands:",
     "  help                    Show this help",
-    "  tui [--lang vi|en] [--provider xai|codex|kiro]",
+    "  tui [--lang vi|en] [--provider xai|codex|kiro|opencode-go]",
     "                          Tabbed OpenTUI account manager (default)",
     "  status [--provider …]   Compact pool status (all if omitted on op-ai)",
     "  list [--tag NAME] [--provider …]",
@@ -103,6 +110,15 @@ function usage(forced?: ProviderKind): string {
       "  import --legacy-db PATH",
     );
   }
+  if (forced === undefined || forced === "opencode-go") {
+    lines.push(
+      "  add --api-key KEY [--label LABEL] [--workspace-id ID] [--auth-cookie COOKIE]",
+      "                          OpenCode Go: static pool key + optional per-account dashboard cred",
+      "  set-cred --id ACCOUNT_ID [--workspace-id ID] [--auth-cookie COOKIE]",
+      "                          OpenCode Go: repoint an account at the right workspace dashboard cred",
+      "  (rotation: opencode-go-rotate agent tool — restarts opencode to apply)",
+    );
+  }
 
   lines.push(
     "",
@@ -122,6 +138,7 @@ function usage(forced?: ProviderKind): string {
     "Add account:",
     "  opencode auth login   # pick xai-multi / codex-multi / kiro-multi",
     "  op-xai add | op-codex add | op-kiro add",
+    "  op-opencode-go add --api-key …   (static key; no OAuth)",
     "",
     "Note: do not run `opencode xai-add` / `opencode codex-add` —",
     "OpenCode treats those as project paths.",
@@ -152,7 +169,8 @@ function toolsFor(
 ): Record<string, import("@opencode-ai/plugin").ToolDefinition> {
   if (provider === "xai") return buildXaiTools(manager);
   if (provider === "codex") return buildCodexTools(manager);
-  return buildKiroTools(manager);
+  if (provider === "kiro") return buildKiroTools(manager);
+  return buildOpenCodeGoTools(manager);
 }
 
 async function runAdd(
@@ -235,6 +253,58 @@ async function runAdd(
           : `Updated account ${result.email ?? result.accountId}`,
       );
     }
+    return;
+  }
+
+  if (provider === "opencode-go") {
+    const manager = createManager();
+    await manager.load();
+    const apiKey = strFlag(flags, "api-key") ?? strFlag(flags, "apiKey");
+    if (!apiKey) {
+      console.error(
+        "op-opencode-go add requires --api-key KEY [--label LABEL] " +
+          "[--workspace-id ID] [--auth-cookie COOKIE]\n\n" +
+          "The key is stored in the multi-ai pool. Run opencode-go-rotate " +
+          "(or restart opencode after switching) to make it the active " +
+          "auth.json key. Per-account --workspace-id/--auth-cookie are " +
+          "optional dashboard creds; when omitted the probe falls back to " +
+          "env (MULTI_AI_OPENCODE_GO_*).",
+      );
+      process.exitCode = 1;
+      return;
+    }
+    const view = manager.providerView("opencode-go");
+    const id = crypto.randomUUID();
+    const label = strFlag(flags, "label");
+    const workspaceId = strFlag(flags, "workspace-id");
+    const authCookieInput = strFlag(flags, "auth-cookie");
+    const authCookie =
+      authCookieInput && authCookieInput.trim().length > 0
+        ? normalizeAuthCookie(authCookieInput)
+        : undefined;
+    await view.add({
+      provider: "opencode-go",
+      accountId: id,
+      refreshToken: apiKey,
+      accessToken: apiKey,
+      label: label && label.trim().length > 0 ? label.trim() : undefined,
+      tags: [],
+      enabled: true,
+      priority: 0,
+      addedAt: Date.now(),
+      lastUsed: 0,
+      lastSwitchReason: "initial",
+      subscriptionStatus: "active",
+      flaggedForRemoval: false,
+      entitlementBlocked: false,
+      // Per-account dashboard cred (omitted → env fallback at probe time).
+      openCodeGoWorkspaceId:
+        workspaceId && workspaceId.trim().length > 0
+          ? workspaceId.trim()
+          : undefined,
+      openCodeGoAuthCookie: authCookie,
+    });
+    console.log(`Added OpenCode Go account ${id.slice(0, 12)}…`);
     return;
   }
 
@@ -436,7 +506,12 @@ async function runStatusBoth(): Promise<void> {
   const manager = createManager();
   await manager.load();
   const { all } = buildTools(manager);
-  for (const key of ["xai-status", "codex-status", "kiro-status"] as const) {
+  for (const key of [
+    "xai-status",
+    "codex-status",
+    "kiro-status",
+    "opencode-go-status",
+  ] as const) {
     const t = all[key];
     if (t) console.log(await t.execute({}, toolCtx()));
   }
@@ -451,7 +526,12 @@ async function runListBoth(
   const tag = strFlag(flags, "tag");
   const args = tag ? { tag } : {};
   let first = true;
-  for (const key of ["xai-list", "codex-list", "kiro-list"] as const) {
+  for (const key of [
+    "xai-list",
+    "codex-list",
+    "kiro-list",
+    "opencode-go-list",
+  ] as const) {
     const t = all[key];
     if (!t) continue;
     if (!first) console.log("");
@@ -502,8 +582,8 @@ async function main(): Promise<void> {
 
   if (requiresProvider(command, forced) && !provider) {
     console.error(
-      `Command "${command}" requires --provider xai|codex|kiro\n` +
-        `(or use op-xai / op-codex / op-kiro alias)\n`,
+      `Command "${command}" requires --provider xai|codex|kiro|opencode-go\n` +
+        `(or use op-xai / op-codex / op-kiro / op-opencode-go alias)\n`,
     );
     console.error(usage(undefined));
     process.exitCode = 1;
@@ -515,7 +595,63 @@ async function main(): Promise<void> {
       await runAdd(provider!, flags);
       return;
     }
-    if (command === "import") {
+  if (command === "set-cred") {
+    const accountId = strFlag(flags, "id");
+    if (!accountId || !accountId.trim()) {
+      console.error(
+        "op-opencode-go set-cred requires --id ACCOUNT_ID " +
+          "[--workspace-id WRK_ID] [--auth-cookie COOKIE]\n\n" +
+          "Both --workspace-id and --auth-cookie are a PAIR: provide them " +
+          "together to set (blank both to clear; omit to keep). The cookie's " +
+          "auth= prefix is stripped automatically and it is never printed.",
+      );
+      process.exitCode = 1;
+      return;
+    }
+    const manager = createManager();
+    await manager.load();
+    const trimmedId = accountId.trim();
+    const workspaceId = strFlag(flags, "workspace-id");
+    const authCookie = strFlag(flags, "auth-cookie");
+    const partial: {
+      workspaceId?: string;
+      authCookie?: string;
+    } = {};
+    if (workspaceId !== undefined) {
+      partial.workspaceId =
+        workspaceId.trim().length > 0 ? workspaceId.trim() : undefined;
+    }
+    if (authCookie !== undefined) {
+      partial.authCookie =
+        authCookie.trim().length > 0
+          ? normalizeAuthCookie(authCookie.trim())
+          : undefined;
+    }
+    const view = manager.providerView("opencode-go");
+    const updated = await view.setOpenCodeGoCred(trimmedId, partial);
+    if (!updated) {
+      console.error(
+        `set-cred: opencode-go account ${trimmedId.slice(0, 12)}… not found ` +
+          `or no longer accepts cred updates.`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+    const wsDisplay = updated.openCodeGoWorkspaceId
+      ? `workspace=${updated.openCodeGoWorkspaceId.slice(0, 12)}…`
+      : "workspace=(unchanged)";
+    const cookieDisplay = authCookie !== undefined
+      ? partial.authCookie
+        ? "cookie=set"
+        : "cookie=cleared"
+      : "cookie=(unchanged)";
+    console.log(
+      `Updated opencode-go account ${trimmedId.slice(0, 12)}… (${wsDisplay}, ${cookieDisplay}). ` +
+        `Press r to probe.`,
+    );
+    return;
+  }
+  if (command === "import") {
       await runImport(provider!, flags);
       return;
     }

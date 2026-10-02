@@ -12,6 +12,7 @@ export const TUI_TABS: readonly TuiTab[] = [
   "xai",
   "kiro",
   "antigravity",
+  "opencode-go",
 ] as const;
 
 export const TAB_LABELS: Record<TuiTab, string> = {
@@ -19,6 +20,7 @@ export const TAB_LABELS: Record<TuiTab, string> = {
   xai: "xAI",
   kiro: "Kiro",
   antigravity: "Antigravity",
+  "opencode-go": "OpenCode Go",
 };
 
 export type TabSelectionState = Record<TuiTab, number>;
@@ -31,6 +33,7 @@ export function createTabSelection(
     codex: Math.max(0, initial.codex ?? 0),
     kiro: Math.max(0, initial.kiro ?? 0),
     antigravity: Math.max(0, initial.antigravity ?? 0),
+    "opencode-go": Math.max(0, initial["opencode-go"] ?? 0),
   };
 }
 
@@ -51,6 +54,7 @@ export function tabFromKey(key: string): TuiTab | undefined {
   if (key === "2") return TUI_TABS[1];
   if (key === "3") return TUI_TABS[2];
   if (key === "4") return TUI_TABS[3];
+  if (key === "5") return TUI_TABS[4];
   return undefined;
 }
 
@@ -95,7 +99,7 @@ export function renderTabBar(active: TuiTab): string {
 export type LiveGeneration = Record<TuiTab, number>;
 
 export function createLiveGeneration(): LiveGeneration {
-  return { xai: 0, codex: 0, kiro: 0, antigravity: 0 };
+  return { xai: 0, codex: 0, kiro: 0, antigravity: 0, "opencode-go": 0 };
 }
 
 export function bumpGeneration(

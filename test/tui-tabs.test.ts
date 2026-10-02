@@ -14,19 +14,23 @@ import {
 } from "../lib/tui/tabs.js";
 
 describe("tui tab state machine", () => {
-  it("cycles codex → xai → kiro → antigravity (Codex-first order)", () => {
+  it("cycles codex → xai → kiro → antigravity → opencode-go (Codex-first order)", () => {
     expect(nextTab("codex")).toBe("xai");
     expect(nextTab("xai")).toBe("kiro");
     expect(nextTab("kiro")).toBe("antigravity");
-    expect(nextTab("antigravity")).toBe("codex");
-    expect(prevTab("codex")).toBe("antigravity");
+    expect(nextTab("antigravity")).toBe("opencode-go");
+    expect(nextTab("opencode-go")).toBe("codex");
+    expect(prevTab("codex")).toBe("opencode-go");
+    expect(prevTab("opencode-go")).toBe("antigravity");
+    expect(prevTab("antigravity")).toBe("kiro");
   });
 
-  it("maps digit keys to tab bar order (1=Codex, 2=xAI, 3=Kiro, 4=Antigravity)", () => {
+  it("maps digit keys to tab bar order (1=Codex, 2=xAI, 3=Kiro, 4=Antigravity, 5=OpenCode Go)", () => {
     expect(tabFromKey("1")).toBe("codex");
     expect(tabFromKey("2")).toBe("xai");
     expect(tabFromKey("3")).toBe("kiro");
     expect(tabFromKey("4")).toBe("antigravity");
+    expect(tabFromKey("5")).toBe("opencode-go");
     expect(tabFromKey("tab")).toBeUndefined();
   });
 
@@ -52,6 +56,17 @@ describe("tui tab state machine", () => {
     expect(renderTabBar("codex")).toContain(" xAI ");
     expect(renderTabBar("xai")).toContain(" Codex ");
     expect(renderTabBar("xai")).toContain("[xAI]");
+    expect(renderTabBar("opencode-go")).toContain("OpenCode Go");
+    expect(renderTabBar("opencode-go")).toMatch(/\[OpenCode Go\]/);
+  });
+
+  it("keeps per-tab selection for opencode-go", () => {
+    let state = createTabSelection({ xai: 0, codex: 2 });
+    state = setSelectedForTab(state, "opencode-go", 3, 5);
+    expect(state["opencode-go"]).toBe(3);
+    expect(state.xai).toBe(0);
+    state = setSelectedForTab(state, "opencode-go", 99, 4);
+    expect(state["opencode-go"]).toBe(3);
   });
 
   it("stale live results are ignored after tab switch generation bump", () => {

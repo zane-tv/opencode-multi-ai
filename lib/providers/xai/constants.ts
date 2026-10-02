@@ -102,6 +102,21 @@ export const DEFAULT_MODELS: Record<
     >;
   }
 > = {
+  "grok-4.6": {
+    name: "Grok 4.6",
+    attachment: true,
+    reasoning: true,
+    modalities: GROK_CHAT_MODALITIES,
+    // Declared below xAI's real 500k prompt hard-cap so OpenCode auto-compacts
+    // with ~50k headroom; requests were overflowing the true cap otherwise.
+    limit: { context: 450_000, output: 500_000 },
+    variants: {
+      low: { reasoningEffort: "low" },
+      medium: { reasoningEffort: "medium" },
+      high: { reasoningEffort: "high" },
+      xhigh: { reasoningEffort: "xhigh" },
+    },
+  },
   "grok-4.5": {
     name: "Grok 4.5",
     attachment: true,

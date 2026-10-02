@@ -34,6 +34,7 @@ export const SETTINGS_FILES = {
   modelsXai: "multi-ai-models-xai.json",
   modelsCodex: "multi-ai-models-codex.json",
   modelsKiro: "multi-ai-models-kiro.json",
+  modelsOpenCodeGo: "multi-ai-models-opencode-go.json",
   /** Legacy v1 pools (migration source; left in place + optional .bak). */
   legacyAccountsXai: "multi-xai-accounts.json",
   legacyAccountsCodex: "multi-codex-accounts.json",
@@ -58,6 +59,10 @@ export const SETTINGS_ENV = {
   langCodexFallback: "MULTI_CODEX_LANG",
   codexFast: "MULTI_AI_CODEX_FAST",
   codexFastFallback: "MULTI_CODEX_FAST",
+  /** Route xAI inference through cli-chat-proxy.grok.com (grok CLI surface). */
+  xaiCliProxy: "MULTI_AI_XAI_CLI_PROXY",
+  /** Override the x-grok-client-version header sent to the CLI proxy. */
+  xaiClientVersion: "MULTI_AI_XAI_CLIENT_VERSION",
   /** Debug logging. */
   debug: "MULTI_AI_DEBUG",
   /** Global CLI shim install dir (falls back to MULTI_XAI_BIN_DIR / MULTI_CODEX_BIN_DIR). */
@@ -98,6 +103,21 @@ export const SETTINGS_PROVIDERS = {
     pluginModule: "lib/plugin/kiro.ts",
     builtinNever: null,
   },
+  /**
+   * opencode-go is a BUILT-IN OpenCode provider: catalog supplies npm /
+   * baseURL / env, auth.json supplies the key. The multi plugin only registers
+   * the `opencodeGoRotate` tool (manual config-file rotation) — install never
+   * writes a `provider.opencode-go` entry.
+   */
+  opencodeGo: {
+    id: "opencode-go-multi",
+    npm: "@ai-sdk/openai-compatible",
+    displayName: "OpenCode Go",
+    pluginModule: "lib/plugin/opencode-go.ts",
+    builtinNever: "opencode-go",
+    bin: "op-opencode-go",
+    modelsFile: "multi-ai-models-opencode-go.json",
+  },
 } as const;
 
 /** CLI bin names installed by scripts/install-cli.sh. */
@@ -106,6 +126,7 @@ export const SETTINGS_CLI_BINS = [
   "op-xai",
   "op-codex",
   "op-kiro",
+  "op-opencode-go",
   "opencode-multi-ai",
   "opencode-multi-xai",
   "opencode-multi-codex",
@@ -118,6 +139,8 @@ export const SETTINGS_CLI_BINS = [
 export const SETTINGS_FILE_KEYS = {
   /** Locale: "en" | "vi". */
   lang: "lang",
+  /** Route xAI inference through cli-chat-proxy.grok.com like the grok CLI. */
+  xaiCliProxy: "xaiCliProxy",
 } as const;
 
 export type SettingsFileName =

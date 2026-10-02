@@ -9,6 +9,7 @@ import {
   fetchModelsDevXai,
   resolveXaiMultiModels,
 } from "../lib/providers/xai/models-sync.js";
+import { DEFAULT_MODELS } from "../lib/providers/xai/constants.js";
 
 const originalFetch = globalThis.fetch;
 let tempDirs: string[] = [];
@@ -27,6 +28,21 @@ async function tempCachePath(): Promise<string> {
   tempDirs.push(dir);
   return path.join(dir, "multi-ai-models-xai.json");
 }
+
+describe("DEFAULT_MODELS seed (constants)", () => {
+  it("includes grok-4.5 and grok-4.6", () => {
+    expect(DEFAULT_MODELS["grok-4.5"]).toBeTruthy();
+    expect(DEFAULT_MODELS["grok-4.6"]).toBeTruthy();
+    expect(DEFAULT_MODELS["grok-4.6"].name).toBe("Grok 4.6");
+    expect(DEFAULT_MODELS["grok-4.6"].reasoning).toBe(true);
+    expect(DEFAULT_MODELS["grok-4.6"].limit?.context).toBe(450_000);
+    expect(DEFAULT_MODELS["grok-4.6"].limit?.output).toBe(500_000);
+    expect(DEFAULT_MODELS["grok-4.6"].variants).toMatchObject({
+      low: { reasoningEffort: "low" },
+      xhigh: { reasoningEffort: "xhigh" },
+    });
+  });
+});
 
 describe("fetchModelsDevXai", () => {
   it("maps models.dev xai catalog and skips imagine/image/video", async () => {

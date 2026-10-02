@@ -30,6 +30,8 @@ describe("settings inventory", () => {
     expect(SETTINGS_ENV.binDir).toBe("MULTI_AI_BIN_DIR");
     expect(SETTINGS_ENV.home).toBe("MULTI_AI_HOME");
     expect(SETTINGS_ENV.opencodeConfig).toBe("OPENCODE_CONFIG");
+    expect(SETTINGS_ENV.xaiCliProxy).toBe("MULTI_AI_XAI_CLI_PROXY");
+    expect(SETTINGS_ENV.xaiClientVersion).toBe("MULTI_AI_XAI_CLIENT_VERSION");
   });
 
   it("includes primary and historical CLI bins", () => {
@@ -40,5 +42,6 @@ describe("settings inventory", () => {
     expect(SETTINGS_CLI_BINS).toContain("opencode-multi-ai");
     expect(SETTINGS_CLI_BINS).toContain("kiro-multi");
     expect(SETTINGS_FILE_KEYS.lang).toBe("lang");
+    expect(SETTINGS_FILE_KEYS.xaiCliProxy).toBe("xaiCliProxy");
   });
 });

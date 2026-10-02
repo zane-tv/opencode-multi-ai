@@ -28,6 +28,7 @@ import {
   PROVIDER_ID,
   XAI_API_BASE,
 } from "../providers/xai/constants.js";
+import { CLI_PROXY_BASE, getXaiCliProxyMode } from "../providers/xai/cli-proxy.js";
 import { resolveXaiMultiModels } from "../providers/xai/models-sync.js";
 
 /**
@@ -101,6 +102,9 @@ const plugin: Plugin = async () => {
   bootstrapHostAuthIfNeeded(PROVIDER_ID, DUMMY_API_KEY);
   const manager = getAccountManager();
   await manager.load();
+  // CLI-proxy mode routes through cli-chat-proxy.grok.com like the grok CLI
+  // (api.x.ai rejects subscription tiers without API credits/entitlement).
+  const baseURL = getXaiCliProxyMode() ? CLI_PROXY_BASE : XAI_API_BASE;
   const customFetch = createProviderFetch(
     xaiAdapter,
     toRotationManager(manager, "xai"),
@@ -122,10 +126,10 @@ const plugin: Plugin = async () => {
       }
       if (p.name === undefined) p.name = xaiAdapter.displayName;
       if (p.options === undefined || typeof p.options !== "object") {
-        p.options = { baseURL: XAI_API_BASE, apiKey: DUMMY_API_KEY };
+        p.options = { baseURL, apiKey: DUMMY_API_KEY };
       } else {
         const opts = p.options as Record<string, unknown>;
-        if (opts.baseURL === undefined) opts.baseURL = XAI_API_BASE;
+        if (opts.baseURL === undefined) opts.baseURL = baseURL;
         if (opts.apiKey === undefined) opts.apiKey = DUMMY_API_KEY;
       }
       // Keep host auth as api placeholder so loader + customFetch always run.
@@ -153,7 +157,7 @@ const plugin: Plugin = async () => {
       loader: async () => ({
         // Dummy key: customFetch overwrites the Authorization header per request.
         apiKey: xaiAdapter.dummyApiKey,
-        baseURL: XAI_API_BASE,
+        baseURL,
         fetch: customFetch,
       }),
       methods: [

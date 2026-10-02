@@ -1,14 +1,17 @@
 import { logger } from "./logger.js";
 import { migrateAccountsIfNeeded } from "../migrate.js";
 import { defaultStoragePath } from "./paths.js";
+import type { OpenCodeGoQuotaSnapshot } from "./adapter.js";
 import type {
   AccountMetadata,
   AccountOf,
   AccountSelectionStrategy,
   AccountStorage,
   CooldownReason,
+  OpenCodeGoAccountMetadata,
   ProviderKind,
 } from "./schemas.js";
+import { normalizeAuthCookie } from "../providers/opencode-go/dashboard.js";
 import {
   backupAccounts,
   loadAccounts,
@@ -95,6 +98,16 @@ export function createDefaultRefreshHandlers(): RefreshDrivers {
         return refreshAntigravityAccount(account);
       },
     },
+    // Static API key: no OAuth refresh. Passthrough returns the stored key
+    // unchanged; the far-future expiry keeps ensureFreshToken on the fast path
+    // (no disk lock / rewrite per call).
+    "opencode-go": {
+      refresh: async (account) => ({
+        accessToken: account.accessToken ?? account.refreshToken,
+        refreshToken: account.refreshToken,
+        expiresAt: Number.MAX_SAFE_INTEGER,
+      }),
+    },
   };
 }
 
@@ -174,6 +187,29 @@ export interface ProviderAccountView {
   recordPlan(id: string, snap: PlanSnapshot): Promise<void>;
   recordUsage(id: string, snap: UsageSnapshot): Promise<void>;
   recordKiroUsage(id: string, snap: KiroUsageSnapshot): Promise<void>;
+  /**
+   * Persist the opencode-go WORKSPACE dashboard quota snapshot onto an
+   * account (opencode-go only). Quota is workspace-level — shared across all
+   * pool keys — so the snapshot is stored on whichever account was probed
+   * last; tab-level display reads it from the sticky account.
+   */
+  setOpenCodeGoQuota(id: string, quota: OpenCodeGoQuotaSnapshot): Promise<void>;
+  /**
+   * Update (or clear) the per-account opencode-go dashboard credential pair
+   * (workspace id + auth cookie). opencode-go only.
+   *
+   * Semantics: an absent field keeps the current value; a present-but-blank
+   * field clears that side; the resulting pair must be BOTH non-empty OR BOTH
+   * cleared (a one-sided set/clear throws). The cookie value is normalized
+   * (`auth=` prefix stripped) and is never echoed by the caller.
+   *
+   * Returns the updated account, or `undefined` when the id is unknown or
+   * the account is not opencode-go.
+   */
+  setOpenCodeGoCred(
+    id: string,
+    partial: { workspaceId?: string; authCookie?: string },
+  ): Promise<OpenCodeGoAccountMetadata | undefined>;
   switchTo(id: string): Promise<void>;
   setEnabled(id: string, enabled: boolean): Promise<void>;
   setLabel(id: string, label?: string): Promise<void>;
@@ -192,6 +228,16 @@ export interface ProviderAccountView {
 
 function identityKey(provider: ProviderKind, id: string): string {
   return `${provider}:${id}`;
+}
+
+/**
+ * Sticky map key for a provider kind. The v3 sticky schema uses camelCase keys
+ * (`opencodeGo`), so the kebab-case `"opencode-go"` kind maps explicitly.
+ */
+function stickyKey(
+  provider: ProviderKind,
+): keyof AccountStorage["sticky"] {
+  return provider === "opencode-go" ? "opencodeGo" : provider;
 }
 
 function matchesIdentity(
@@ -327,6 +373,13 @@ export function isRotationReady(
     }
   }
 
+  if (account.provider === "opencode-go") {
+    // Static-key accounts: no quota/usage semantics. Selection gating is fully
+    // covered by isSelectable (enabled / dead / entitlement / quotaReset /
+    // cooldown); flagged-for-removal is the only extra skip.
+    if (account.flaggedForRemoval) return false;
+  }
+
   return true;
 }
 
@@ -341,7 +394,7 @@ export function resolveActiveAccount(
   if (pool.length === 0) return undefined;
 
   const ready = pool.filter((account) => isRotationReady(account, now));
-  const stickyId = storage.sticky[provider];
+  const stickyId = storage.sticky[stickyKey(provider)];
   if (stickyId) {
     const sticky = ready.find((account) => account.accountId === stickyId);
     if (sticky) return sticky;
@@ -412,7 +465,7 @@ function sortAccountsByPriority(
 }
 
 function clearSticky(storage: AccountStorage, provider: ProviderKind): void {
-  delete storage.sticky[provider];
+  delete storage.sticky[stickyKey(provider)];
 }
 
 function demoteAccountInProvider(
@@ -484,7 +537,7 @@ function assignSticky(
   now: number = Date.now(),
   opts?: { promote?: boolean },
 ): void {
-  storage.sticky[provider] = account.accountId;
+  storage.sticky[stickyKey(provider)] = account.accountId;
   if (opts?.promote && isRotationReady(account, now)) {
     promoteAccountInProvider(storage, provider, account);
   }
@@ -496,7 +549,7 @@ function switchStickyIfUnselectable(
   id: string,
   now: number = Date.now(),
 ): void {
-  if (storage.sticky[provider] !== id) return;
+  if (storage.sticky[stickyKey(provider)] !== id) return;
   const account = storage.accounts.find((candidate) =>
     matchesIdentity(candidate, provider, id),
   );
@@ -514,6 +567,12 @@ function mergeOAuthAccount(
   current: AccountMetadata,
   incoming: AccountMetadata,
 ): void {
+  if (
+    current.provider === "opencode-go" ||
+    incoming.provider === "opencode-go"
+  ) {
+    throw new Error("opencode-go accounts cannot be merged via OAuth");
+  }
   current.refreshToken = incoming.refreshToken;
   current.accessToken = incoming.accessToken;
   current.expiresAt = incoming.expiresAt;
@@ -637,6 +696,11 @@ export class AccountManager {
     if (refresh.antigravity !== undefined) {
       drivers.antigravity = toRefreshDriver<"antigravity">(refresh.antigravity);
     }
+    if (refresh["opencode-go"] !== undefined) {
+      drivers["opencode-go"] = toRefreshDriver<"opencode-go">(
+        refresh["opencode-go"],
+      );
+    }
     this.refreshByProvider = drivers;
   }
 
@@ -690,7 +754,7 @@ export class AccountManager {
   }
 
   sticky(provider: ProviderKind): string | undefined {
-    return this.storage?.sticky[provider];
+    return this.storage?.sticky[stickyKey(provider)];
   }
 
   selectAccount(
@@ -706,7 +770,7 @@ export class AccountManager {
       isRotationReady(account, now) &&
       !attempted.has(account.accountId);
 
-    const stickyId = storage.sticky[provider];
+    const stickyId = storage.sticky[stickyKey(provider)];
     if (policy === "sticky" && stickyId !== undefined) {
       const current = storage.accounts.find(
         (account) =>
@@ -749,7 +813,7 @@ export class AccountManager {
     }
 
     if (policy === "round-robin") {
-      const stickyId = storage.sticky[provider];
+      const stickyId = storage.sticky[stickyKey(provider)];
       if (stickyId !== undefined) {
         const cursor = storage.accounts.findIndex((account) =>
           matchesIdentity(account, provider, stickyId),
@@ -803,7 +867,7 @@ export class AccountManager {
       );
       if (index === -1) return;
       storage.accounts.splice(index, 1);
-      if (storage.sticky[provider] === id) clearSticky(storage, provider);
+      if (storage.sticky[stickyKey(provider)] === id) clearSticky(storage, provider);
     });
   }
 
@@ -990,6 +1054,8 @@ export class AccountManager {
     id: string,
     snap: RateLimitSnapshot,
   ): Promise<void> {
+    // opencode-go is a static-key provider without rate-limit tracking.
+    if (provider === "opencode-go") return;
     const observedAt = snap.observedAt ?? Date.now();
     await this.mutateNonToken(provider, id, (account) => {
       if (snap.limitRequests !== undefined) {
@@ -1198,6 +1264,67 @@ export class AccountManager {
       if (snap.email !== undefined) account.email = snap.email;
       account.usageObservedAt = observedAt;
     });
+  }
+
+  /**
+   * Persist the opencode-go WORKSPACE dashboard quota snapshot onto an
+   * account. opencode-go only (provider is hardcoded): quota is
+   * workspace-level — shared across every pool key — so it is stored on
+   * whichever account was probed last; the TUI reads it from the sticky
+   * account for tab-level display, never per-account.
+   *
+   * Every field is rewritten from the snapshot (undefined when a window is
+   * missing), so the persisted state always reflects the last probe.
+   */
+  async setOpenCodeGoQuota(
+    id: string,
+    quota: OpenCodeGoQuotaSnapshot,
+  ): Promise<void> {
+    await this.mutateNonToken("opencode-go", id, (account) => {
+      if (account.provider !== "opencode-go") return;
+      account.openCodeGoFiveHourUsage = quota.rolling?.usagePercent;
+      account.openCodeGoFiveHourReset = quota.rolling?.resetAt;
+      account.openCodeGoWeeklyUsage = quota.weekly?.usagePercent;
+      account.openCodeGoWeeklyReset = quota.weekly?.resetAt;
+      account.openCodeGoMonthlyUsage = quota.monthly?.usagePercent;
+      account.openCodeGoMonthlyReset = quota.monthly?.resetAt;
+    });
+  }
+
+  /**
+   * Update (or clear) the per-account opencode-go dashboard credential pair.
+   *
+   * An absent field keeps the current value; a present-but-blank field clears
+   * that side. The resulting pair must end up BOTH non-empty OR BOTH cleared —
+   * a one-sided set/clear throws `must provide both workspace and cookie, or
+   * neither` (partial pairs would silently fall back to env at probe time,
+   * which is exactly the wrong-workspace trap this fixes). The cookie value is
+   * normalized (`auth=` prefix stripped) before persist and is never logged.
+   */
+  async setOpenCodeGoCred(
+    id: string,
+    partial: { workspaceId?: string; authCookie?: string },
+  ): Promise<OpenCodeGoAccountMetadata | undefined> {
+    const current = this.get("opencode-go", id);
+    if (!current || current.provider !== "opencode-go") return undefined;
+    const wsNext =
+      partial.workspaceId !== undefined
+        ? partial.workspaceId.trim()
+        : (current.openCodeGoWorkspaceId ?? "").trim();
+    const cookieNext =
+      partial.authCookie !== undefined
+        ? normalizeAuthCookie(partial.authCookie)
+        : (current.openCodeGoAuthCookie ?? "").trim();
+    if ((wsNext.length > 0) !== (cookieNext.length > 0)) {
+      throw new Error("must provide both workspace and cookie, or neither");
+    }
+    await this.mutateNonToken("opencode-go", id, (account) => {
+      if (account.provider !== "opencode-go") return;
+      account.openCodeGoWorkspaceId = wsNext.length > 0 ? wsNext : undefined;
+      account.openCodeGoAuthCookie = cookieNext.length > 0 ? cookieNext : undefined;
+    });
+    const updated = this.get("opencode-go", id);
+    return updated?.provider === "opencode-go" ? updated : undefined;
   }
 
   async switchTo(provider: ProviderKind, id: string): Promise<void> {
@@ -1410,7 +1537,7 @@ export class AccountManager {
         }
       }
       storage.accounts = survivors;
-      const stickyId = storage.sticky[provider];
+      const stickyId = storage.sticky[stickyKey(provider)];
       if (stickyId !== undefined && removed.includes(stickyId)) {
         clearSticky(storage, provider);
       }
@@ -1453,6 +1580,8 @@ export class AccountManager {
       recordPlan: (id, snap) => this.recordPlan(provider, id, snap),
       recordUsage: (id, snap) => this.recordUsage(provider, id, snap),
       recordKiroUsage: (id, snap) => this.recordKiroUsage(provider, id, snap),
+      setOpenCodeGoQuota: (id, quota) => this.setOpenCodeGoQuota(id, quota),
+      setOpenCodeGoCred: (id, partial) => this.setOpenCodeGoCred(id, partial),
       switchTo: (id) => this.switchTo(provider, id),
       setEnabled: (id, enabled) => this.setEnabled(provider, id, enabled),
       setLabel: (id, label) => this.setLabel(provider, id, label),
@@ -1577,6 +1706,17 @@ export class AccountManager {
         if (!driver) {
           throw new Error(
             "ensureFreshToken: no refresh handler configured for provider antigravity",
+          );
+        }
+        refreshed = await driver.refresh(account, { force });
+      } else if (
+        provider === "opencode-go" &&
+        account.provider === "opencode-go"
+      ) {
+        const driver = this.refreshByProvider["opencode-go"];
+        if (!driver) {
+          throw new Error(
+            "ensureFreshToken: no refresh handler configured for provider opencode-go",
           );
         }
         refreshed = await driver.refresh(account, { force });

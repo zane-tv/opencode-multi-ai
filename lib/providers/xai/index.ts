@@ -5,6 +5,17 @@
 
 export { xaiAdapter } from "./adapter.js";
 export {
+  CLI_PROXY_BASE,
+  CLI_PROXY_HOST,
+  CLI_PROXY_ORIGIN,
+  CLI_PROXY_REFERER,
+  CLI_TOKEN_AUTH_VALUE,
+  getXaiCliProxyMode,
+  setXaiCliProxy,
+  toggleXaiCliProxy,
+  resetXaiCliProxyForTests,
+} from "./cli-proxy.js";
+export {
   CLIENT_ID,
   OAUTH_ISSUER,
   OAUTH_DISCOVERY_URL,

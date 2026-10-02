@@ -153,7 +153,7 @@ const en: Dict = {
   in_m: "in {n}m",
   in_h: "in {n}h",
   in_d: "in {n}d",
-  brand: "OpenCode Multi AI · SuperGrok + Codex + Kiro",
+  brand: "OpenCode Multi AI · SuperGrok + Codex + Kiro + OpenCode Go",
   selection_mode: "m  Selection",
   desc_selection_mode:
     "Cycle account selection: sticky → round-robin → lowest-usage",
@@ -187,9 +187,9 @@ const en: Dict = {
   detail_title: " detail / quota ",
   empty_pool: "  empty pool",
   empty_hint:
-    "opencode auth login → xai-multi / codex-multi / kiro-multi",
+    "opencode auth login → xai-multi / codex-multi / kiro-multi · op-opencode-go add --api-key KEY",
   no_accounts:
-    "No accounts yet.\n\nAdd one:\n  Antigravity: a/A Google browser · o 9Router\n  Codex: a device · A browser · o OAuth JSON\n  xAI: a device · A browser\n  Kiro: a Builder ID/IDC · I ARN · i API key · o JSON · O export · c kiro-cli\n  Esc cancels while waiting\n\nTabs: Codex | xAI | Kiro | Antigravity",
+    "No accounts yet.\n\nAdd one:\n  Antigravity: a/A Google browser · o 9Router\n  Codex: a device · A browser · o OAuth JSON\n  xAI: a device · A browser\n  Kiro: a Builder ID/IDC · I ARN · i API key · o JSON · O export · c kiro-cli\n  OpenCode Go: a API key (sk_…)\n  Esc cancels while waiting\n\nTabs: Codex | xAI | Kiro | Antigravity | OpenCode Go",
   lang_switched: "Language: English",
   add_device: "a  Add (device)",
   add_browser: "A  Add (browser)",
@@ -201,6 +201,12 @@ const en: Dict = {
   add_kiro_json: "o  Import credentials JSON",
   add_kiro_export: "O  Import Account Manager export",
   add_kiro_cli: "c  Import kiro-cli DB",
+  add_opencode_go_api_key: "a  Add OpenCode Go key",
+  desc_add_opencode_go_api_key:
+    "Paste an OpenCode Go API key (sk_…) — no OAuth, no wizard",
+  rotate_active: "w  Rotate active key",
+  desc_rotate_active:
+    "Switch to the next pool key and write it to auth.json (restart opencode to apply)",
   how_to_add: "?  How to add",
   refresh: "r  Refresh",
   refresh_all: "R  Refresh all",
@@ -295,7 +301,7 @@ const vi: Dict = {
   in_m: "sau {n} phút",
   in_h: "sau {n} giờ",
   in_d: "sau {n} ngày",
-  brand: "OpenCode Multi AI · SuperGrok + Codex + Kiro",
+  brand: "OpenCode Multi AI · SuperGrok + Codex + Kiro + OpenCode Go",
   selection_mode: "m  Chọn acc",
   desc_selection_mode:
     "Đổi cách chọn acc: sticky → round-robin → lowest-usage",
@@ -329,9 +335,9 @@ const vi: Dict = {
   detail_title: " chi tiết / hạn mức ",
   empty_pool: "  chưa có tài khoản",
   empty_hint:
-    "opencode auth login → xai-multi / codex-multi / kiro-multi",
+    "opencode auth login → xai-multi / codex-multi / kiro-multi · op-opencode-go add --api-key KEY",
   no_accounts:
-    "Chưa có tài khoản.\n\nThêm:\n  Antigravity: a/A Google trình duyệt · o 9Router\n  Codex: a mã thiết bị · A trình duyệt · o OAuth JSON\n  xAI: a mã thiết bị · A trình duyệt\n  Kiro: a Builder ID/IDC · I ARN · i API key · o JSON · O export · c kiro-cli\n  Esc huỷ khi đang chờ\n\nTab: Codex | xAI | Kiro | Antigravity",
+    "Chưa có tài khoản.\n\nThêm:\n  Antigravity: a/A Google trình duyệt · o 9Router\n  Codex: a mã thiết bị · A trình duyệt · o OAuth JSON\n  xAI: a mã thiết bị · A trình duyệt\n  Kiro: a Builder ID/IDC · I ARN · i API key · o JSON · O export · c kiro-cli\n  OpenCode Go: a API key (sk_…)\n  Esc huỷ khi đang chờ\n\nTab: Codex | xAI | Kiro | Antigravity | OpenCode Go",
   lang_switched: "Ngôn ngữ: Tiếng Việt",
   add_device: "a  Thêm (mã thiết bị)",
   add_browser: "A  Thêm (trình duyệt)",
@@ -343,6 +349,12 @@ const vi: Dict = {
   add_kiro_json: "o  Import credentials JSON",
   add_kiro_export: "O  Import Account Manager export",
   add_kiro_cli: "c  Import kiro-cli DB",
+  add_opencode_go_api_key: "a  Thêm key OpenCode Go",
+  desc_add_opencode_go_api_key:
+    "Dán API key OpenCode Go (sk_…) — không OAuth, không wizard",
+  rotate_active: "w  Xoay key đang dùng",
+  desc_rotate_active:
+    "Chuyển sang key kế tiếp trong pool và ghi vào auth.json (khởi động lại opencode để áp dụng)",
   how_to_add: "?  Hướng dẫn thêm",
   refresh: "r  Làm mới",
   refresh_all: "R  Làm mới tất cả",

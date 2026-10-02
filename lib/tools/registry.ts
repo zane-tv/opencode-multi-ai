@@ -1,9 +1,12 @@
+import crypto from "node:crypto";
+
 import { tool, type ToolDefinition } from "@opencode-ai/plugin";
 
 import type {
   AccountManager,
   ProviderAccountView,
 } from "../core/accounts.js";
+import type { OpenCodeGoQuotaSnapshot } from "../core/adapter.js";
 import type { AccountMetadata, ProviderKind } from "../core/schemas.js";
 import {
   formatAge,
@@ -28,6 +31,13 @@ import {
   resolveXaiPlanResetsAtMs,
 } from "../providers/xai/request/plan.js";
 import { fetchGrokUserProfile } from "../providers/xai/request/user-profile.js";
+import { openCodeGoAdapter } from "../providers/opencode-go/adapter.js";
+import { writeActiveKeyToAuthJson } from "../providers/opencode-go/auth/auth-file.js";
+import {
+  hasAnyUsage,
+  normalizeAuthCookie,
+  resolveDashboardCred,
+} from "../providers/opencode-go/dashboard.js";
 import {
   fetchCodexUsage,
   isWindowDisabled,
@@ -54,11 +64,13 @@ import {
 const { schema } = tool;
 
 const KIRO_MAX = 20;
+const OPENCODE_GO_MAX = 20;
 
 const MAX: Partial<Record<ProviderKind, number>> = {
   xai: XAI_MAX,
   codex: CODEX_MAX,
   kiro: KIRO_MAX,
+  "opencode-go": OPENCODE_GO_MAX,
 };
 
 function identify(a: AccountMetadata): string {
@@ -147,10 +159,17 @@ function kiroSummaryLine(a: AccountMetadata): string {
   return `auth=${method}  region=${region}`;
 }
 
+function opencodeGoSummaryLine(a: AccountMetadata): string {
+  if (a.provider !== "opencode-go") return "";
+  // Static API key — never print the key itself.
+  return "auth=api-key  (static; rotated via opencode-go-rotate)";
+}
+
 function providerSummaryLine(a: AccountMetadata): string {
   if (a.provider === "codex") return usageSummaryLine(a);
   if (a.provider === "xai") return xaiSummaryLine(a);
   if (a.provider === "kiro") return kiroSummaryLine(a);
+  if (a.provider === "opencode-go") return opencodeGoSummaryLine(a);
   return "";
 }
 
@@ -1421,14 +1440,518 @@ export function buildKiroTools(
   };
 }
 
+/** Human summary of an opencode-go workspace quota snapshot (tool output). */
+function formatOpenCodeGoQuota(quota: OpenCodeGoQuotaSnapshot): string {
+  const parts: string[] = [];
+  if (quota.rolling) {
+    const reset =
+      typeof quota.rolling.resetAt === "number"
+        ? ` (resets ${formatUntil(quota.rolling.resetAt)})`
+        : "";
+    parts.push(`5h: ${quota.rolling.usagePercent}%${reset}`);
+  }
+  if (quota.weekly) parts.push(`week: ${quota.weekly.usagePercent}%`);
+  if (quota.monthly) parts.push(`month: ${quota.monthly.usagePercent}%`);
+  return parts.join(", ");
+}
+
+/**
+ * OpenCode Go agent/CLI tools.
+ *
+ * opencode-go is a BUILT-IN OpenCode provider: the pool stores static API
+ * keys, and rotation is MANUAL config-file rotation — the active key is
+ * mirrored into OpenCode's auth.json (entry `opencode-go`) and opencode is
+ * restarted/reloaded. No OAuth, no per-key quota/usage semantics.
+ */
+export function buildOpenCodeGoTools(
+  manager: AccountManager,
+): Record<string, ToolDefinition> {
+  const view = manager.providerView("opencode-go");
+  const shared = buildSharedTools(
+    view,
+    "opencode-go",
+    "OpenCode Go",
+    "No OpenCode Go accounts. Run `op-opencode-go add --api-key …` to add one.",
+    (n) =>
+      [
+        `Add OpenCode Go account (pool ${n}/${OPENCODE_GO_MAX}):`,
+        "",
+        "Recommended:",
+        "  op-opencode-go add --api-key KEY [--label LABEL]",
+        "  opencode-go-add apiKey=… (agent tool)",
+        "",
+        "The key is stored in the multi-ai pool and mirrored into OpenCode's",
+        "auth.json (entry opencode-go) when you run opencode-go-rotate.",
+        "",
+        "Then: opencode-go-list / opencode-go-switch / opencode-go-rotate",
+        "      opencode-go-probe / opencode-go-health / opencode-go-set-cred",
+      ].join("\n"),
+  );
+
+  const sel = selectorArgs("opencode-go-list");
+  const target = (args: { index?: number; id?: string }): AccountMetadata =>
+    resolveAccount(view.list(), args);
+
+  return {
+    ...shared,
+
+    // Override the generic switch tool: opencode-go MUST mirror the active
+    // key into OpenCode's auth.json so the built-in provider picks it up.
+    "opencode-go-switch": tool({
+      description:
+        "Switch the active OpenCode Go account by index or id, and mirror " +
+        "the new key into OpenCode's auth.json (entry opencode-go). " +
+        "Restart opencode for the new key to take effect.",
+      args: sel,
+      async execute(args) {
+        const account = target(args);
+        await view.switchTo(account.accountId);
+        if (typeof account.accessToken === "string") {
+          await writeActiveKeyToAuthJson(account.accessToken);
+        }
+        const label = account.label ? ` (${account.label})` : "";
+        return (
+          `Active account is now ${shortId(account.accountId)}${label}. ` +
+          `Mirrored API key to auth.json. Restart opencode for the new key to take effect.`
+        );
+      },
+    }),
+
+    "opencode-go-add": tool({
+      description:
+        "Add an OpenCode Go API key to the pool. The key is stored in the " +
+        "multi-ai pool (never printed back); run opencode-go-rotate to make " +
+        "it the active auth.json key. Optional workspaceId/authCookie store " +
+        "per-account dashboard credentials (probe prefers them over env " +
+        "MULTI_AI_OPENCODE_GO_*); the cookie is SENSITIVE and never echoed.",
+      args: {
+        apiKey: schema
+          .string()
+          .describe("OpenCode Go API key (static key; no OAuth)"),
+        label: schema
+          .string()
+          .optional()
+          .describe("friendly label for the account"),
+        workspaceId: schema
+          .string()
+          .optional()
+          .describe(
+            "dashboard workspace id (wrk_XXXX) for quota scraping; " +
+              "omit to fall back to env at probe time",
+          ),
+        authCookie: schema
+          .string()
+          .optional()
+          .describe(
+            "dashboard auth cookie value (raw `auth` cookie value, WITHOUT " +
+              "the `auth=` prefix — it is stripped automatically if present); " +
+              "SENSITIVE — omit to fall back to env at probe time",
+          ),
+      },
+      async execute(args) {
+        const apiKey = args.apiKey.trim();
+        if (!apiKey) {
+          return "opencode-go-add needs a non-empty apiKey.";
+        }
+        if (manager.list("opencode-go").length >= OPENCODE_GO_MAX) {
+          return `OpenCode Go pool is at the maximum of ${OPENCODE_GO_MAX} accounts.`;
+        }
+        const id = crypto.randomUUID();
+        const label =
+          args.label && args.label.trim().length > 0
+            ? args.label.trim()
+            : undefined;
+        const workspaceId =
+          args.workspaceId && args.workspaceId.trim().length > 0
+            ? args.workspaceId.trim()
+            : undefined;
+        const authCookieInput =
+          args.authCookie && args.authCookie.trim().length > 0
+            ? args.authCookie.trim()
+            : undefined;
+        const authCookie = authCookieInput
+          ? normalizeAuthCookie(authCookieInput)
+          : undefined;
+        await manager.add({
+          provider: "opencode-go",
+          accountId: id,
+          refreshToken: apiKey,
+          accessToken: apiKey,
+          label,
+          tags: [],
+          enabled: true,
+          priority: 0,
+          addedAt: Date.now(),
+          lastUsed: 0,
+          lastSwitchReason: "initial",
+          subscriptionStatus: "active",
+          flaggedForRemoval: false,
+          entitlementBlocked: false,
+          openCodeGoWorkspaceId: workspaceId,
+          openCodeGoAuthCookie: authCookie,
+        });
+        const credNote =
+          workspaceId && authCookie
+            ? " (dashboard cred stored per-account)"
+            : workspaceId || authCookie
+              ? " (partial dashboard cred — probe falls back to env for the missing half)"
+              : "";
+        return `Added OpenCode Go account ${shortId(id)}${
+          label ? ` (${label})` : ""
+        }${credNote}. Run opencode-go-rotate to make it the active key.`;
+      },
+    }),
+
+    "opencode-go-set-cred": tool({
+      description:
+        "Update the per-account OpenCode Go dashboard credentials (workspace " +
+        "id + auth cookie) used for quota scraping. Both fields are a PAIR: " +
+        "pass --workspace-id and --auth-cookie together to set, or pass both " +
+        "blank to clear (omitting one keeps its current value; a one-sided " +
+        "set/clear is rejected so the probe never silently falls back to " +
+        "env). The cookie is normalized (auth= prefix stripped), SENSITIVE, " +
+        "and never echoed. Run opencode-go-probe to refresh the quota.",
+      args: {
+        accountId: schema
+          .string()
+          .describe("opencode-go account id to update (see opencode-go-list)"),
+        workspaceId: schema
+          .string()
+          .optional()
+          .describe(
+            "new dashboard workspace id (wrk_XXXX); blank clears the pair " +
+              "when authCookie is also blank; omitted keeps the current value",
+          ),
+        authCookie: schema
+          .string()
+          .optional()
+          .describe(
+            "new dashboard auth cookie value (auth= prefix stripped); " +
+              "SENSITIVE — blank clears the pair when workspaceId is also " +
+              "blank; omitted keeps the current value",
+          ),
+      },
+      async execute(args) {
+        const accountId = args.accountId.trim();
+        if (!accountId) {
+          return "opencode-go-set-cred needs a non-empty accountId.";
+        }
+        if (!manager.get("opencode-go", accountId)) {
+          return (
+            `Unknown OpenCode Go account id "${accountId}". ` +
+            `Run opencode-go-list to see ids.`
+          );
+        }
+        // absent → keep current; present-but-blank → clear; present → set.
+        const wsValue =
+          args.workspaceId === undefined
+            ? undefined
+            : args.workspaceId.trim();
+        const cookieValue =
+          args.authCookie === undefined
+            ? undefined
+            : normalizeAuthCookie(args.authCookie);
+        try {
+          const updated = await manager.setOpenCodeGoCred(accountId, {
+            workspaceId: wsValue,
+            authCookie: cookieValue,
+          });
+          if (!updated || updated.provider !== "opencode-go") {
+            return `Unknown OpenCode Go account id "${accountId}".`;
+          }
+          const wsNow = (updated.openCodeGoWorkspaceId ?? "").trim();
+          const cookieSet = (updated.openCodeGoAuthCookie ?? "").trim() !== "";
+          const wsReport =
+            wsValue === undefined
+              ? "unchanged"
+              : wsValue.length > 0
+                ? wsNow
+                : "cleared";
+          const cookieReport =
+            cookieValue === undefined
+              ? "unchanged"
+              : cookieValue.length > 0
+                ? "set"
+                : "cleared";
+          return (
+            `Updated opencode-go account ${shortId(accountId)} cred ` +
+            `(workspace=${wsReport}, cookie=${cookieReport}). ` +
+            `Probe to refresh quota.`
+          );
+        } catch (err) {
+          return err instanceof Error ? err.message : String(err);
+        }
+      },
+    }),
+
+    "opencode-go-remove": tool({
+      description:
+        "Remove one OpenCode Go account from the pool by index or id. " +
+        "Requires confirm=true (destructive; the key cannot be recovered).",
+      args: {
+        ...sel,
+        confirm: schema
+          .boolean()
+          .optional()
+          .describe(
+            "must be true to delete; omit/false is a no-op with guidance",
+          ),
+      },
+      async execute(args) {
+        if (args.confirm !== true) {
+          return (
+            "opencode-go-remove requires confirm=true. Removing deletes the " +
+            "stored key and cannot be undone. Re-run as: " +
+            "opencode-go-remove index=<N> confirm=true  (or id=<id> confirm=true)"
+          );
+        }
+        let account: AccountMetadata;
+        try {
+          account = target(args);
+        } catch {
+          return `Unknown OpenCode Go account for the given index/id. Run opencode-go-list to see current indexes and ids.`;
+        }
+        await manager.remove("opencode-go", account.accountId);
+        return `Removed OpenCode Go account ${shortId(account.accountId)}.`;
+      },
+    }),
+
+    "opencode-go-rotate": tool({
+      description:
+        "Rotate the active OpenCode Go account. Writes the active account's " +
+        "API key into OpenCode's auth.json (entry opencode-go). Restart " +
+        "opencode for the new key to take effect.",
+      args: {
+        accountId: schema
+          .string()
+          .optional()
+          .describe(
+            "explicit account id to activate; when omitted, rotates to the " +
+              "next account in priority order after the current sticky one",
+          ),
+      },
+      async execute(args) {
+        const accounts = manager.list("opencode-go");
+        if (accounts.length === 0) {
+          return "No OpenCode Go accounts in the pool. Add one first.";
+        }
+
+        // Explicit id: activate it (switchTo promotes to the front).
+        if (args.accountId !== undefined) {
+          if (!manager.get("opencode-go", args.accountId)) {
+            return `Unknown OpenCode Go account id "${args.accountId}".`;
+          }
+          await manager.switchTo("opencode-go", args.accountId);
+          const account = manager.get("opencode-go", args.accountId);
+          if (!account || typeof account.accessToken !== "string") {
+            return `Switched sticky to ${args.accountId}, but it has no access token; cannot write auth.json.`;
+          }
+          await writeActiveKeyToAuthJson(account.accessToken);
+          return `Rotated to account ${shortId(args.accountId)}. Restart opencode for the new key to take effect.`;
+        }
+
+        // Implicit: rotate FORWARD in stable priority order (round-robin),
+        // without promotion — switchTo promote would reorder the list and
+        // collapse rotation to a 2-cycle between the top two accounts.
+        const attempted = new Set<string>();
+        const stickyId = manager.sticky("opencode-go");
+        if (stickyId) attempted.add(stickyId);
+        const next = manager.selectAccount(
+          "opencode-go",
+          attempted,
+          "round-robin",
+        );
+        if (!next) {
+          return "No other OpenCode Go account to rotate to.";
+        }
+        if (typeof next.accessToken !== "string") {
+          return `Rotated sticky to ${next.accountId}, but it has no access token; cannot write auth.json.`;
+        }
+        await writeActiveKeyToAuthJson(next.accessToken);
+        return `Rotated to account ${shortId(next.accountId)}. Restart opencode for the new key to take effect.`;
+      },
+    }),
+
+    "opencode-go-probe": tool({
+      description:
+        "Check whether the OpenCode Go API accepts an account's key via " +
+        "GET {BASE_URL}/models with the stored bearer key. Defaults to the " +
+        "sticky account; pass id to probe another.",
+      args: {
+        id: schema
+          .string()
+          .optional()
+          .describe("account id; defaults to the sticky account"),
+      },
+      async execute(args) {
+        let account: AccountMetadata | undefined;
+        if (args.id !== undefined) {
+          account = manager.get("opencode-go", args.id);
+        } else {
+          const stickyId = manager.sticky("opencode-go");
+          account = stickyId
+            ? manager.get("opencode-go", stickyId)
+            : manager.list("opencode-go")[0];
+        }
+        if (!account || typeof account.accessToken !== "string") {
+          return "No OpenCode Go account with an access token to probe.";
+        }
+        const probe = openCodeGoAdapter.probeQuota;
+        if (!probe) {
+          return "OpenCode Go probing is not supported by the adapter.";
+        }
+        const go =
+          account.provider === "opencode-go" ? account : undefined;
+        const result = await probe(account.accessToken, {
+          accountId: account.accountId,
+          openCodeGoWorkspaceId: go?.openCodeGoWorkspaceId,
+          openCodeGoAuthCookie: go?.openCodeGoAuthCookie,
+        });
+        if (result.ok) {
+          await view.touchLastUsed(account.accountId);
+          const quota = result.openCodeGoQuota;
+          if (quota && hasAnyUsage(quota)) {
+            await manager.setOpenCodeGoQuota(account.accountId, quota);
+            return (
+              `OpenCode Go key for ${shortId(account.accountId)} is valid ` +
+              `(HTTP ${String(result.status ?? "?")}). ` +
+              `Quota — ${formatOpenCodeGoQuota(quota)}.`
+            );
+          }
+          const base =
+            `OpenCode Go key for ${shortId(account.accountId)} is valid ` +
+            `(HTTP ${String(result.status ?? "?")}).`;
+          if (quota !== undefined) {
+            // Dashboard reached (HTTP 200) but the workspace carries no Go
+            // subscription — the probe is pointed at the wrong workspace.
+            const wsId =
+              go?.openCodeGoWorkspaceId?.trim() ||
+              resolveDashboardCred()?.workspaceId ||
+              "?";
+            return (
+              `${base} Dashboard shows NO Go subscription on workspace ` +
+              `${wsId} — use opencode-go-set-cred to point at the right ` +
+              `workspace.`
+            );
+          }
+          return base;
+        }
+        return `OpenCode Go key for ${shortId(account.accountId)} rejected: ${
+          typeof result.reason === "string"
+            ? result.reason
+            : "HTTP " + String(result.status ?? "?")
+        }`;
+      },
+    }),
+
+    // CLI `op-opencode-go limits|quota` maps here (toolNameFor → opencode-go-limits).
+    "opencode-go-limits": tool({
+      description:
+        "Show OpenCode Go workspace quota from the stored dashboard snapshot " +
+        "(rolling 5h / weekly / monthly usage %). The snapshot is captured by " +
+        "opencode-go-probe, the TUI r key, or --probe. Quota is workspace-level, " +
+        "shared across all pool keys. Alias: opencode-go-quota.",
+      args: {
+        id: schema
+          .string()
+          .optional()
+          .describe("account id; defaults to the sticky account"),
+        probe: schema
+          .boolean()
+          .optional()
+          .describe(
+            "when true, re-probe the dashboard and refresh the stored snapshot",
+          ),
+      },
+      async execute(args) {
+        let account: AccountMetadata | undefined;
+        if (args.id !== undefined) {
+          account = manager.get("opencode-go", args.id);
+        } else {
+          const stickyId = manager.sticky("opencode-go");
+          account = stickyId
+            ? manager.get("opencode-go", stickyId)
+            : manager.list("opencode-go")[0];
+        }
+        if (!account) {
+          return "No OpenCode Go accounts in the pool. Add one first.";
+        }
+        if (args.probe === true) {
+          if (typeof account.accessToken !== "string") {
+            return "No OpenCode Go access token to probe.";
+          }
+          const probe = openCodeGoAdapter.probeQuota;
+          if (!probe) {
+            return "OpenCode Go probing is not supported by the adapter.";
+          }
+          const go =
+            account.provider === "opencode-go" ? account : undefined;
+          const result = await probe(account.accessToken, {
+            accountId: account.accountId,
+            openCodeGoWorkspaceId: go?.openCodeGoWorkspaceId,
+            openCodeGoAuthCookie: go?.openCodeGoAuthCookie,
+          });
+          if (result.ok && result.openCodeGoQuota) {
+            await manager.setOpenCodeGoQuota(
+              account.accountId,
+              result.openCodeGoQuota,
+            );
+            account = manager.get("opencode-go", account.accountId) ?? account;
+          } else if (!result.ok) {
+            return `Probe failed: ${
+              typeof result.reason === "string"
+                ? result.reason
+                : "HTTP " + String(result.status ?? "?")
+            }`;
+          }
+        }
+        const go =
+          account.provider === "opencode-go" ? account : undefined;
+        const stored: Array<string> = [];
+        const push = (usage: number | undefined, reset: number | undefined, label: string) => {
+          if (typeof usage === "number") {
+            stored.push(
+              `${label}: ${usage}%` +
+                (typeof reset === "number"
+                  ? ` (resets ${formatUntil(reset)})`
+                  : ""),
+            );
+          }
+        };
+        push(go?.openCodeGoFiveHourUsage, go?.openCodeGoFiveHourReset, "5h");
+        push(go?.openCodeGoWeeklyUsage, go?.openCodeGoWeeklyReset, "week");
+        push(go?.openCodeGoMonthlyUsage, go?.openCodeGoMonthlyReset, "month");
+        const label = go?.label ?? shortId(account.accountId);
+        if (stored.length === 0) {
+          return (
+            `OpenCode Go account ${label} has no stored quota snapshot. ` +
+            `Run opencode-go-limits --probe (or the TUI r key) to fetch it from ` +
+            `the workspace dashboard.`
+          );
+        }
+        return `OpenCode Go quota (${label}): ${stored.join(", ")}. ` +
+          `Use --probe to refresh.`;
+      },
+    }),
+  };
+}
+
 export function buildTools(manager: AccountManager): {
   xai: Record<string, ToolDefinition>;
   codex: Record<string, ToolDefinition>;
   kiro: Record<string, ToolDefinition>;
+  opencodeGo: Record<string, ToolDefinition>;
   all: Record<string, ToolDefinition>;
 } {
   const xai = buildXaiTools(manager);
   const codex = buildCodexTools(manager);
   const kiro = buildKiroTools(manager);
-  return { xai, codex, kiro, all: { ...xai, ...codex, ...kiro } };
+  const opencodeGo = buildOpenCodeGoTools(manager);
+  return {
+    xai,
+    codex,
+    kiro,
+    opencodeGo,
+    all: { ...xai, ...codex, ...kiro, ...opencodeGo },
+  };
 }

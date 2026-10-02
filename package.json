@@ -21,6 +21,7 @@
     "op-xai": "./scripts/cli.ts",
     "op-codex": "./scripts/cli.ts",
     "op-kiro": "./scripts/cli.ts",
+    "op-opencode-go": "./scripts/cli.ts",
     "opencode-multi-ai": "./scripts/cli.ts",
     "opencode-multi-xai": "./scripts/cli.ts",
     "opencode-multi-codex": "./scripts/cli.ts",
@@ -34,6 +35,7 @@
     "./lib/plugin/codex": "./lib/plugin/codex.ts",
     "./lib/plugin/kiro": "./lib/plugin/kiro.ts",
     "./lib/plugin/antigravity": "./lib/plugin/antigravity.ts",
+    "./lib/plugin/opencode-go": "./lib/plugin/opencode-go.ts",
     "./tui": "./lib/plugin/tui.tsx"
   },
   "scripts": {
