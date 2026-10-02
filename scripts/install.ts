@@ -22,7 +22,7 @@
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 
 import {
   CODEX_BASE_URL,
@@ -39,6 +39,12 @@ import {
   PROVIDER_ID as KIRO_PROVIDER_ID,
 } from "../lib/providers/kiro/constants.js";
 import { resolveKiroMultiModels } from "../lib/providers/kiro/models-sync.js";
+import {
+  ANTIGRAVITY_BASE_URL,
+  DUMMY_API_KEY as ANTIGRAVITY_DUMMY_API_KEY,
+  PROVIDER_ID as ANTIGRAVITY_PROVIDER_ID,
+} from "../lib/providers/antigravity/constants.js";
+import { resolveAntigravityMultiModels } from "../lib/providers/antigravity/models-sync.js";
 import {
   DEFAULT_MODELS as XAI_DEFAULT_MODELS,
   PROVIDER_ID as XAI_PROVIDER_ID,
@@ -66,6 +72,8 @@ const CODEX_PROVIDER_NPM = "@ai-sdk/openai";
 const CODEX_PROVIDER_NAME = "Codex Multi-Account";
 const KIRO_PROVIDER_NPM = "@ai-sdk/openai-compatible";
 const KIRO_PROVIDER_NAME = "Kiro Multi-Account";
+const ANTIGRAVITY_PROVIDER_NPM = "@ai-sdk/openai-compatible";
+const ANTIGRAVITY_PROVIDER_NAME = "Antigravity Multi-Account (Gemini)";
 
 const CONFIG_SCHEMA = "https://opencode.ai/config.json";
 
@@ -83,6 +91,7 @@ export const PLUGIN_PACKAGE_SUBPATHS = [
   `${PLUGIN_PACKAGE}/lib/plugin/xai`,
   `${PLUGIN_PACKAGE}/lib/plugin/codex`,
   `${PLUGIN_PACKAGE}/lib/plugin/kiro`,
+  `${PLUGIN_PACKAGE}/lib/plugin/antigravity`,
 ] as const;
 
 export interface ProviderChange {
@@ -99,6 +108,7 @@ export interface InstallResult {
   providers: ProviderChange[];
   pluginEntriesAdded: string[];
   legacyPluginsRemoved: string[];
+  skillsInstalled?: string[];
   config: Record<string, unknown>;
 }
 
@@ -519,6 +529,68 @@ async function mergeKiroProvider(
   return { id: KIRO_PROVIDER_ID, added, updated };
 }
 
+async function mergeAntigravityProvider(
+  config: Record<string, unknown>,
+): Promise<ProviderChange> {
+  if (!isPlainObject(config.provider)) {
+    config.provider = {};
+  }
+  const provider = config.provider as Record<string, unknown>;
+
+  const existing = isPlainObject(provider[ANTIGRAVITY_PROVIDER_ID])
+    ? (provider[ANTIGRAVITY_PROVIDER_ID] as Record<string, unknown>)
+    : undefined;
+
+  const added = existing === undefined;
+  let updated = false;
+  const entry: Record<string, unknown> = { ...(existing ?? {}) };
+
+  if (entry.npm === undefined) {
+    entry.npm = ANTIGRAVITY_PROVIDER_NPM;
+    if (!added) updated = true;
+  }
+  if (entry.name === undefined) {
+    entry.name = ANTIGRAVITY_PROVIDER_NAME;
+    if (!added) updated = true;
+  }
+
+  const options = isPlainObject(entry.options)
+    ? { ...(entry.options as Record<string, unknown>) }
+    : {};
+  if (options.baseURL === undefined) {
+    options.baseURL = ANTIGRAVITY_BASE_URL;
+    if (!added) updated = true;
+  }
+  if (
+    options.apiKey === undefined ||
+    options.apiKey === null ||
+    options.apiKey === ""
+  ) {
+    options.apiKey = ANTIGRAVITY_DUMMY_API_KEY;
+    if (!added) updated = true;
+  }
+  if (options.accountSelectionStrategy === undefined) {
+    options.accountSelectionStrategy = "round-robin";
+    if (!added) updated = true;
+  }
+  entry.options = options;
+
+  const prevModels = isPlainObject(entry.models)
+    ? (entry.models as Record<string, unknown>)
+    : {};
+  const nextModels = await resolveAntigravityMultiModels({
+    allowNetwork: false,
+    userModels: prevModels,
+  });
+  if (JSON.stringify(prevModels) !== JSON.stringify(nextModels)) {
+    if (!added) updated = true;
+  }
+  entry.models = nextModels;
+
+  provider[ANTIGRAVITY_PROVIDER_ID] = entry;
+  return { id: ANTIGRAVITY_PROVIDER_ID, added, updated };
+}
+
 async function maybeBackup(
   configPath: string,
   raw: string | null,
@@ -542,6 +614,41 @@ async function maybeBackup(
 }
 
 /**
+ * Copy bundled smart skills from the package root skills/ directory
+ * into the OpenCode config skills/ directory.
+ */
+export async function installSkills(configDir: string): Promise<string[]> {
+  const root = packageRoot();
+  const srcSkillsDir = path.join(root, "skills");
+  const destSkillsDir = path.join(configDir, "skills");
+
+  const installed: string[] = [];
+  try {
+    const entries = await readdir(srcSkillsDir, { withFileTypes: true });
+    for (const ent of entries) {
+      if (ent.isDirectory()) {
+        const skillName = ent.name;
+        const srcSkillFile = path.join(srcSkillsDir, skillName, "SKILL.md");
+        const destSkillFolder = path.join(destSkillsDir, skillName);
+        const destSkillFile = path.join(destSkillFolder, "SKILL.md");
+
+        try {
+          const content = await readFile(srcSkillFile, "utf8");
+          await mkdir(destSkillFolder, { recursive: true });
+          await writeFile(destSkillFile, content, "utf8");
+          installed.push(skillName);
+        } catch {
+          // ignore unreadable
+        }
+      }
+    }
+  } catch {
+    // ignore missing skills dir
+  }
+  return installed;
+}
+
+/**
  * Write multi-provider config (+ optional plugin entries) into opencode.json.
  */
 export async function installProvider(
@@ -558,6 +665,7 @@ export async function installProvider(
   const xai = await mergeXaiProvider(config);
   const codex = await mergeCodexProvider(config);
   const kiro = await mergeKiroProvider(config);
+  const antigravity = await mergeAntigravityProvider(config);
 
   // Guard: never write built-in keys as our multi providers.
   if (isPlainObject(config.provider)) {
@@ -606,14 +714,18 @@ export async function installProvider(
     await writeFile(resolved, body, "utf8");
   }
 
+  const configDir = path.dirname(resolved);
+  const skillsInstalled = await installSkills(configDir);
+
   return {
     configPath: resolved,
     created,
     backedUp,
     backupPath,
-    providers: [xai, codex, kiro],
+    providers: [xai, codex, kiro, antigravity],
     pluginEntriesAdded,
     legacyPluginsRemoved,
+    skillsInstalled,
     config,
   };
 }
@@ -655,6 +767,9 @@ function printSummary(result: InstallResult): void {
   }
   for (const entry of pluginEntriesAdded) {
     console.log(`  + registered plugin "${entry}"`);
+  }
+  if (result.skillsInstalled && result.skillsInstalled.length > 0) {
+    console.log(`  + installed ${result.skillsInstalled.length} smart skills: ${result.skillsInstalled.join(", ")}`);
   }
 
   // Sanity: built-ins must not appear as our multi ids.

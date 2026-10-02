@@ -88,14 +88,24 @@ export function isSidebarReady(
   if (!isSelectable(account, now)) return false;
 
   if (account.provider === "codex") {
+    const primaryResetPending =
+      typeof account.primaryResetAt === "number" &&
+      account.primaryResetAt > now;
     const primaryFull =
       typeof account.primaryUsedPercent === "number" &&
-      account.primaryUsedPercent >= 100;
+      account.primaryUsedPercent >= 100 &&
+      (primaryResetPending || typeof account.primaryResetAt !== "number");
     if (primaryFull) {
+      const secondaryResetPending =
+        typeof account.secondaryResetAt === "number" &&
+        account.secondaryResetAt > now;
+      const secondaryFull =
+        typeof account.secondaryUsedPercent === "number" &&
+        account.secondaryUsedPercent >= 100 &&
+        (secondaryResetPending || typeof account.secondaryResetAt !== "number");
       const secondaryOpen =
         !isWindowDisabled(account.secondaryWindowMinutes) &&
-        typeof account.secondaryUsedPercent === "number" &&
-        account.secondaryUsedPercent < 100;
+        !secondaryFull;
       if (!secondaryOpen) return false;
     }
   }

@@ -189,11 +189,12 @@ const en: Dict = {
   empty_hint:
     "opencode auth login → xai-multi / codex-multi / kiro-multi",
   no_accounts:
-    "No accounts yet.\n\nAdd one:\n  Codex: a device · A browser · o OAuth JSON\n  xAI: a device · A browser\n  Kiro: a Builder ID/IDC · I ARN · i API key · o JSON · O export · c kiro-cli\n  Esc cancels while waiting\n\nTabs: Codex | xAI | Kiro",
+    "No accounts yet.\n\nAdd one:\n  Antigravity: a/A Google browser · o 9Router\n  Codex: a device · A browser · o OAuth JSON\n  xAI: a device · A browser\n  Kiro: a Builder ID/IDC · I ARN · i API key · o JSON · O export · c kiro-cli\n  Esc cancels while waiting\n\nTabs: Codex | xAI | Kiro | Antigravity",
   lang_switched: "Language: English",
   add_device: "a  Add (device)",
   add_browser: "A  Add (browser)",
   add_codex_json: "o  Import OAuth JSON",
+  add_antigravity_9router: "o  Import from 9Router",
   add_kiro_idc: "a  Builder ID / IDC",
   add_kiro_api_key: "i  API key (ksk_)",
   add_kiro_idc_arn: "I  IDC + Profile ARN",
@@ -227,6 +228,8 @@ const en: Dict = {
     "Open browser OAuth on the active tab's loopback — same pool upsert; Esc cancels",
   desc_add_codex_json:
     "Paste Codex OAuth JSON (tokens / auth.json shape) or a file path — bulk import supported",
+  desc_add_antigravity_9router:
+    "Scan ~/.n9router/db.json and import all Antigravity CloudCode accounts into the pool",
   desc_add_kiro_idc:
     "AWS Builder ID / IAM Identity Center device login (start URL + sso region)",
   desc_add_kiro_api_key:
@@ -328,11 +331,12 @@ const vi: Dict = {
   empty_hint:
     "opencode auth login → xai-multi / codex-multi / kiro-multi",
   no_accounts:
-    "Chưa có tài khoản.\n\nThêm:\n  Codex: a mã thiết bị · A trình duyệt · o OAuth JSON\n  xAI: a mã thiết bị · A trình duyệt\n  Kiro: a Builder ID/IDC · I ARN · i API key · o JSON · O export · c kiro-cli\n  Esc huỷ khi đang chờ\n\nTab: Codex | xAI | Kiro",
+    "Chưa có tài khoản.\n\nThêm:\n  Antigravity: a/A Google trình duyệt · o 9Router\n  Codex: a mã thiết bị · A trình duyệt · o OAuth JSON\n  xAI: a mã thiết bị · A trình duyệt\n  Kiro: a Builder ID/IDC · I ARN · i API key · o JSON · O export · c kiro-cli\n  Esc huỷ khi đang chờ\n\nTab: Codex | xAI | Kiro | Antigravity",
   lang_switched: "Ngôn ngữ: Tiếng Việt",
   add_device: "a  Thêm (mã thiết bị)",
   add_browser: "A  Thêm (trình duyệt)",
   add_codex_json: "o  Import OAuth JSON",
+  add_antigravity_9router: "o  Import từ 9Router",
   add_kiro_idc: "a  Builder ID / IDC",
   add_kiro_api_key: "i  API key (ksk_)",
   add_kiro_idc_arn: "I  IDC + Profile ARN",
@@ -366,6 +370,8 @@ const vi: Dict = {
     "OAuth trình duyệt loopback của tab đang chọn — upsert vào pool; Esc huỷ",
   desc_add_codex_json:
     "Dán OAuth JSON Codex (tokens / auth.json) hoặc đường dẫn file — hỗ trợ import nhiều account",
+  desc_add_antigravity_9router:
+    "Quét ~/.n9router/db.json và tự động import tài khoản Antigravity CloudCode vào pool",
   desc_add_kiro_idc:
     "Đăng nhập AWS Builder ID / IAM Identity Center (start URL + sso region)",
   desc_add_kiro_api_key:

@@ -85,6 +85,7 @@ import {
 } from "../providers/xai/request/plan.js";
 import { codexAdapter } from "../providers/codex/adapter.js";
 import { kiroAdapter } from "../providers/kiro/adapter.js";
+import { antigravityAdapter } from "../providers/antigravity/adapter.js";
 import {
   isWindowDisabled,
   leftPercent,
@@ -106,11 +107,11 @@ import {
   isStaleResult,
 } from "./tabs.js";
 import {
+  TUI_BINDINGS,
   actionMenuBack,
   actionMenuItems,
   actionMenuSelectValue,
   createActionMenuLevel,
-  footerBindingsForProvider,
   openActionMenuGroup,
   advanceConfirmation,
   clearConfirmation,
@@ -163,6 +164,13 @@ const T = {
   kiroSelectedBg: "#2a1608",
   kiroSelectedText: "#fdba74",
 
+  antigravity: "#a855f7",
+  antigravityBright: "#c084fc",
+  antigravityDim: "#7e22ce",
+  antigravityBorder: "#9333ea",
+  antigravitySelectedBg: "#251238",
+  antigravitySelectedText: "#c084fc",
+
   ready: "#4ade80",
   quota: "#fbbf24",
   cooling: "#22d3ee",
@@ -212,6 +220,7 @@ const ADAPTERS: Record<TuiTab, AnyProviderAdapter> = {
   xai: xaiAdapter,
   codex: codexAdapter,
   kiro: kiroAdapter,
+  antigravity: antigravityAdapter,
 };
 
 type StatusTone = "ok" | "warn" | "err" | "info" | "neutral";
@@ -302,6 +311,16 @@ export type RunTuiOptions = {
         signal?: AbortSignal,
       ) => Promise<{ accountId: string; email?: string; outcome: string }>;
     };
+    antigravity?: {
+      browserLogin?: (
+        view: ProviderAccountView,
+        opts?: {
+          openBrowser?: boolean;
+          onAuthorizeUrl?: (url: string) => void;
+          signal?: AbortSignal;
+        },
+      ) => Promise<{ accountId: string; email?: string; outcome: string }>;
+    };
   };
 };
 
@@ -331,6 +350,16 @@ function providerHue(tab: TuiTab): {
       border: T.kiroBorder,
       selectedBg: T.kiroSelectedBg,
       selectedText: T.kiroSelectedText,
+    };
+  }
+  if (tab === "antigravity") {
+    return {
+      accent: T.antigravity,
+      bright: T.antigravityBright,
+      dim: T.antigravityDim,
+      border: T.antigravityBorder,
+      selectedBg: T.antigravitySelectedBg,
+      selectedText: T.antigravitySelectedText,
     };
   }
   return {
@@ -484,13 +513,15 @@ function joinChunks(chunks: TextChunk[]): StyledText {
   return new StyledText(chunks);
 }
 
-function styledBrand(activeTab: TuiTab): StyledText {
+function styledBrand(): StyledText {
   const chunks: TextChunk[] = [];
   chunks.push(bold(fg(T.codexBright)("◈")));
   chunks.push(fg(T.brandSep)("·"));
   chunks.push(bold(fg(T.xaiBright)("◈")));
   chunks.push(fg(T.brandSep)("·"));
   chunks.push(bold(fg(T.kiroBright)("◈")));
+  chunks.push(fg(T.brandSep)("·"));
+  chunks.push(bold(fg(T.antigravityBright)("◈")));
   chunks.push(fg(T.brandSep)("⟩"));
   chunks.push(bold(fg(T.brandMark)("◆")));
   chunks.push(fg(T.textDim)("  "));
@@ -500,24 +531,21 @@ function styledBrand(activeTab: TuiTab): StyledText {
   chunks.push(fg(T.textDim)("  ·  "));
   chunks.push(
     fg(T.brandTag)(
-      tr("brand").trim() || "OpenCode Multi AI · SuperGrok + Codex + Kiro",
+      tr("brand").trim() || "OpenCode Multi AI · Codex + xAI + Kiro + Antigravity",
     ),
   );
   chunks.push(fg(T.textDim)("  ·  "));
   chunks.push(fg(T.key)("m"));
   chunks.push(fg(T.textDim)(":"));
   chunks.push(fg(T.cooling)(selectionStrategyLabel(getSelectionStrategy())));
-  // Codex Fast only applies to codex-multi inference — hide chip on other agents.
-  if (activeTab === "codex") {
-    chunks.push(fg(T.textDim)("  ·  "));
-    chunks.push(fg(T.key)("F"));
-    chunks.push(fg(T.textDim)(":"));
-    chunks.push(
-      fg(getCodexFastMode() ? T.ready : T.textDim)(
-        `codex ${codexFastModeLabel()}`,
-      ),
-    );
-  }
+  chunks.push(fg(T.textDim)("  ·  "));
+  chunks.push(fg(T.key)("F"));
+  chunks.push(fg(T.textDim)(":"));
+  chunks.push(
+    fg(getCodexFastMode() ? T.ready : T.textDim)(
+      `codex ${codexFastModeLabel()}`,
+    ),
+  );
   return joinChunks(chunks);
 }
 
@@ -646,9 +674,15 @@ function styledHints(
   return t`${fg(T.key)("↑↓")}${fg(T.textDim)(" select  ")}${fg(T.key)("s")}${fg(T.textDim)(" sticky  ")}${fg(T.key)("r")}${fg(T.textDim)(" refresh  ")}${fg(T.key)("g")}${fg(T.textDim)(" lang  ")}${fg(T.key)("q")}${fg(T.textDim)(" quit")}${fg(T.cooling)(live)}`;
 }
 
-function styledFooter(activeTab: TuiTab): StyledText {
+function styledFooter(): StyledText {
   const chunks: TextChunk[] = [];
-  const shown = footerBindingsForProvider(activeTab);
+  const seenKeys = new Set<string>();
+  const shown = TUI_BINDINGS.filter((b) => {
+    if (!b.available) return false;
+    if (seenKeys.has(b.key)) return false;
+    seenKeys.add(b.key);
+    return true;
+  });
   for (let i = 0; i < shown.length; i++) {
     const b = shown[i]!;
     if (i > 0) chunks.push(fg(T.textDim)("  "));
@@ -663,25 +697,24 @@ function styledFooter(activeTab: TuiTab): StyledText {
 function styledHelp(activeTab: TuiTab, locale: Locale): StyledText {
   void locale;
   const hue = providerHue(activeTab);
-  const agentLabel = TAB_LABELS[activeTab];
   const chunks: TextChunk[] = [
     bold(fg(T.codexBright)("◈")),
     fg(T.brandSep)("·"),
     bold(fg(T.xaiBright)("◈")),
     fg(T.brandSep)("·"),
     bold(fg(T.kiroBright)("◈")),
+    fg(T.brandSep)("·"),
+    bold(fg(T.antigravityBright)("◈")),
     fg(T.brandSep)("⟩"),
     bold(fg(T.brandMark)("◆")),
     fg(T.textDim)("  "),
     bold(fg(T.brandOp)("OpenCode Multi AI")),
     fg(T.text)("\n"),
-    fg(T.textDim)(
-      `  ${agentLabel} shortcuts · s = ACTIVE + list #1 · 1/2/3 tabs`,
-    ),
+    fg(T.textDim)("  One pool · four providers · s = ACTIVE + list #1"),
     fg(T.text)("\n"),
     fg(T.textDim)("─".repeat(40)),
     fg(T.text)("\n"),
-    bold(fg(hue.bright)(`${tr("how_to_add")} · ${agentLabel}`)),
+    bold(fg(hue.bright)(tr("how_to_add"))),
     fg(T.text)("\n"),
     fg(T.textDim)("─".repeat(40)),
     fg(T.text)("\n"),
@@ -701,29 +734,29 @@ function styledHelp(activeTab: TuiTab, locale: Locale): StyledText {
       fg(T.textDim)("  op-codex import --json '{...}'"),
     );
     chunks.push(fg(T.text)("\n\n"));
-  } else if (activeTab === "xai") {
-    chunks.push(bold(fg(hue.bright)("xAI OAuth")));
+  }
+  if (activeTab === "antigravity") {
+    chunks.push(bold(fg(hue.bright)("Antigravity Google OAuth / 9Router")));
     chunks.push(fg(T.text)("\n"));
-    chunks.push(fg(T.textDim)("  a  Device code login"));
+    chunks.push(
+      fg(T.textDim)("  A  Browser Google OAuth login (port 8085)"),
+    );
     chunks.push(fg(T.text)("\n"));
-    chunks.push(fg(T.textDim)("  A  Browser OAuth"));
-    chunks.push(fg(T.text)("\n\n"));
-  } else if (activeTab === "kiro") {
-    chunks.push(bold(fg(hue.bright)("Kiro add methods")));
-    chunks.push(fg(T.text)("\n"));
-    chunks.push(fg(T.textDim)("  a  Builder ID / IDC device"));
-    chunks.push(fg(T.text)("\n"));
-    chunks.push(fg(T.textDim)("  I  IDC + Profile ARN"));
-    chunks.push(fg(T.text)("\n"));
-    chunks.push(fg(T.textDim)("  i  API key (ksk_…)"));
-    chunks.push(fg(T.text)("\n"));
-    chunks.push(fg(T.textDim)("  o  Credentials JSON · O export · c kiro-cli"));
+    chunks.push(
+      fg(T.textDim)("  o  1-Click import accounts from 9Router"),
+    );
     chunks.push(fg(T.text)("\n\n"));
   }
-  for (const b of footerBindingsForProvider(activeTab)) {
-    chunks.push(fg(T.key)(b.key.padEnd(4)));
-    chunks.push(fg(T.value)(tr(b.labelKey)));
-    chunks.push(fg(T.text)("\n"));
+  {
+    const seenHelpKeys = new Set<string>();
+    for (const b of TUI_BINDINGS) {
+      if (!b.available) continue;
+      if (seenHelpKeys.has(b.key)) continue;
+      seenHelpKeys.add(b.key);
+      chunks.push(fg(T.key)(b.key.padEnd(4)));
+      chunks.push(fg(T.value)(tr(b.labelKey)));
+      chunks.push(fg(T.text)("\n"));
+    }
   }
   chunks.push(fg(T.text)("\n"));
   chunks.push(fg(T.textDim)(`locale: ${localeLabel(getLocale())}  (? closes)`));
@@ -1453,7 +1486,7 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
 
   const brandText = new TextRenderable(renderer, {
     id: "brand",
-    content: styledBrand(activeTab),
+    content: styledBrand(),
     height: 1,
     width: "100%",
   });
@@ -1589,7 +1622,6 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
     id: "edit-input",
     width: "100%",
     visible: false,
-    maxLength: 65536,
     backgroundColor: parseColor(T.surfaceRaised),
     textColor: parseColor(T.value),
     focusedBackgroundColor: parseColor(T.surfaceRaised),
@@ -1606,7 +1638,7 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
 
   const footer = new TextRenderable(renderer, {
     id: "footer",
-    content: styledFooter(activeTab),
+    content: styledFooter(),
     height: 1,
     width: "100%",
   });
@@ -1797,7 +1829,7 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
       const hue = providerHue(activeTab);
 
       applyProviderChrome(activeTab);
-      safeSetContent(brandText, styledBrand(activeTab));
+      safeSetContent(brandText, styledBrand());
       safeSetContent(tabText, styledTabBar(activeTab));
       void renderTabBar(activeTab);
       safeSetContent(
@@ -1808,7 +1840,7 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
         statusText,
         styledHints(semanticStatus, liveEnabled, liveBusy),
       );
-      safeSetContent(footer, styledFooter(activeTab));
+      safeSetContent(footer, styledFooter());
 
       accountSelect.options = accountOptions(v, adapter(), now);
       accountSelect.selectedBackgroundColor = parseColor(hue.selectedBg);
@@ -2805,6 +2837,10 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
         return "success";
       }
 
+      if (tab === "antigravity") {
+        return "success";
+      }
+
       await v.recordUsage(account.accountId, {
         planType: asString(result.planType),
         primaryUsedPercent: asFiniteNumber(result.primaryUsedPercent),
@@ -2892,6 +2928,9 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
         return;
       case "tab-kiro":
         switchTab("kiro");
+        return;
+      case "tab-antigravity":
+        switchTab("antigravity");
         return;
       case "tab-next":
         switchTab(nextTab(activeTab));
@@ -3200,14 +3239,18 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
                 ?.accountId,
             kiro: manager.providerView("kiro").list()[selection.kiro!]
               ?.accountId,
+            antigravity: manager.providerView("antigravity").list()[selection.antigravity!]
+              ?.accountId,
           };
           gens = bumpGeneration(gens, "xai");
           gens = bumpGeneration(gens, "codex");
           gens = bumpGeneration(gens, "kiro");
+          gens = bumpGeneration(gens, "antigravity");
           await manager.reloadFromDisk();
           restoreSelectionById("xai", keep.xai);
           restoreSelectionById("codex", keep.codex);
           restoreSelectionById("kiro", keep.kiro);
+          restoreSelectionById("antigravity", keep.antigravity);
           setStatus({ text: "reloaded from disk", tone: "ok" });
           refreshViews();
         });
@@ -3218,6 +3261,10 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
           beginKiroWizard("idc");
           return;
         }
+        if (activeTab === "antigravity") {
+          void startAdd("browser");
+          return;
+        }
         void startAdd("device");
         return;
       case "add-browser":
@@ -3226,6 +3273,16 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
           return;
         }
         void startAdd("browser");
+        return;
+      case "add-antigravity-9router":
+        if (activeTab !== "antigravity") {
+          setStatus({
+            text: "switch to Antigravity tab for 9Router import",
+            tone: "warn",
+          });
+          return;
+        }
+        void start9RouterImport();
         return;
       case "add-kiro-idc":
         if (activeTab !== "kiro") {
@@ -3251,6 +3308,10 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
       case "add-codex-json":
         if (activeTab === "kiro") {
           beginKiroWizard("json");
+          return;
+        }
+        if (activeTab === "antigravity") {
+          void start9RouterImport();
           return;
         }
         if (activeTab !== "codex") {
@@ -3294,6 +3355,42 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
         const _exhaustive: never = action;
         void _exhaustive;
       }
+    }
+  }
+
+  async function start9RouterImport(): Promise<void> {
+    if (busy || addAbort) return;
+    busy = true;
+    setStatus({ text: "importing from 9Router…", tone: "info" });
+    try {
+      const { importAntigravityFrom9Router } = await import(
+        "../providers/antigravity/auth/import-9router.js"
+      );
+      const res = await importAntigravityFrom9Router({ manager });
+      refreshViews();
+      if (res.imported > 0) {
+        setStatus({
+          text: `imported ${res.imported} accounts from 9Router (${res.skipped} skipped)`,
+          tone: "ok",
+        });
+      } else if (res.skipped > 0) {
+        setStatus({
+          text: `all ${res.skipped} 9Router accounts already in pool`,
+          tone: "info",
+        });
+      } else {
+        setStatus({
+          text: "no antigravity accounts found in 9Router",
+          tone: "warn",
+        });
+      }
+    } catch (err) {
+      setStatus({
+        text: `9Router import failed: ${(err as Error).message}`,
+        tone: "err",
+      });
+    } finally {
+      busy = false;
     }
   }
 
@@ -3386,6 +3483,16 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
           email: account.email,
           outcome,
         };
+      } else if (tab === "antigravity") {
+        const inj = opts.login?.antigravity;
+        const fn =
+          inj?.browserLogin ??
+          (await import("../providers/antigravity/auth/login.js")).browserLogin;
+        result = await fn(v, {
+          openBrowser: true,
+          signal: controller.signal,
+          onAuthorizeUrl: (url) => paintBrowser(T.antigravityBright, url),
+        });
       } else {
         const inj = opts.login?.codex;
         if (mode === "device") {
@@ -3563,6 +3670,7 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
       action !== "tab-xai" &&
       action !== "tab-codex" &&
       action !== "tab-kiro" &&
+      action !== "tab-antigravity" &&
       action !== "tab-next"
     ) {
       return;

@@ -6,12 +6,9 @@ import {
   actionMenuItems,
   actionMenuSelectValue,
   advanceConfirmation,
-  bindingAppliesTo,
-  bindingsForProvider,
   clearConfirmation,
   createActionMenuLevel,
   decodeTuiAction,
-  footerBindingsForProvider,
   normalizeTags,
   openActionMenuGroup,
   rowIndexFromMouse,
@@ -101,6 +98,8 @@ describe("decodeTuiAction", () => {
     expect(decodeTuiAction(key({ name: "v" }))).toBe("toggle-live");
     expect(decodeTuiAction(key({ name: "1" }))).toBe("tab-codex");
     expect(decodeTuiAction(key({ name: "2" }))).toBe("tab-xai");
+    expect(decodeTuiAction(key({ name: "3" }))).toBe("tab-kiro");
+    expect(decodeTuiAction(key({ name: "4" }))).toBe("tab-antigravity");
     expect(decodeTuiAction(key({ name: "tab" }))).toBe("tab-next");
   });
 
@@ -410,6 +409,15 @@ describe("action menu hierarchy", () => {
       "add-kiro-export",
       "add-kiro-cli",
     ]);
+
+    const agItems = actionMenuItems(level, "antigravity");
+    const agActions = agItems
+      .filter((i) => i.kind === "action")
+      .map((i) => (i.kind === "action" ? i.binding.action : ""));
+    expect(agActions).toEqual([
+      "add-browser",
+      "add-antigravity-9router",
+    ]);
   });
 
   it("decodes kiro/codex add hotkeys", () => {
@@ -434,58 +442,5 @@ describe("action menu hierarchy", () => {
       "toggle-codex-fast",
     );
     expect(decodeTuiAction(key({ sequence: "F" }))).toBe("toggle-codex-fast");
-  });
-
-  it("hides Codex Fast top action on non-codex tabs", () => {
-    const codex = actionMenuItems(createActionMenuLevel(), "codex");
-    const xai = actionMenuItems(createActionMenuLevel(), "xai");
-    const kiro = actionMenuItems(createActionMenuLevel(), "kiro");
-    expect(
-      codex.some((i) => i.kind === "top" && i.action === "toggle-codex-fast"),
-    ).toBe(true);
-    expect(
-      xai.some((i) => i.kind === "top" && i.action === "toggle-codex-fast"),
-    ).toBe(false);
-    expect(
-      kiro.some((i) => i.kind === "top" && i.action === "toggle-codex-fast"),
-    ).toBe(false);
-  });
-
-  it("footer bindings advertise only the active agent shortcuts", () => {
-    const codex = footerBindingsForProvider("codex");
-    const xai = footerBindingsForProvider("xai");
-    const kiro = footerBindingsForProvider("kiro");
-    const actions = (list: typeof codex) => list.map((b) => b.action);
-
-    expect(actions(codex)).toContain("add-device");
-    expect(actions(codex)).toContain("add-codex-json");
-    expect(actions(codex)).toContain("toggle-codex-fast");
-    expect(actions(codex)).not.toContain("add-kiro-api-key");
-
-    expect(actions(xai)).toContain("add-device");
-    expect(actions(xai)).not.toContain("add-codex-json");
-    expect(actions(xai)).not.toContain("toggle-codex-fast");
-    expect(actions(xai)).not.toContain("add-kiro-idc");
-
-    expect(actions(kiro)).toContain("add-kiro-idc");
-    expect(actions(kiro)).toContain("add-kiro-cli");
-    expect(actions(kiro)).not.toContain("add-device");
-    expect(actions(kiro)).not.toContain("toggle-codex-fast");
-
-    expect(codex.find((b) => b.key === "a")?.action).toBe("add-device");
-    expect(kiro.find((b) => b.key === "a")?.action).toBe("add-kiro-idc");
-    expect(codex.find((b) => b.key === "o")?.action).toBe("add-codex-json");
-    expect(kiro.find((b) => b.key === "o")?.action).toBe("add-kiro-json");
-  });
-
-  it("bindingAppliesTo / bindingsForProvider respect providers field", () => {
-    const fast = TUI_BINDINGS.find((b) => b.action === "toggle-codex-fast")!;
-    expect(bindingAppliesTo(fast, "codex")).toBe(true);
-    expect(bindingAppliesTo(fast, "xai")).toBe(false);
-    const switchB = TUI_BINDINGS.find((b) => b.action === "switch")!;
-    expect(bindingAppliesTo(switchB, "kiro")).toBe(true);
-    expect(
-      bindingsForProvider("xai").some((b) => b.action === "add-kiro-cli"),
-    ).toBe(false);
   });
 });

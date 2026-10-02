@@ -33,6 +33,7 @@
     "./lib/plugin/xai": "./lib/plugin/xai.ts",
     "./lib/plugin/codex": "./lib/plugin/codex.ts",
     "./lib/plugin/kiro": "./lib/plugin/kiro.ts",
+    "./lib/plugin/antigravity": "./lib/plugin/antigravity.ts",
     "./tui": "./lib/plugin/tui.tsx"
   },
   "scripts": {

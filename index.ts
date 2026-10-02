@@ -17,3 +17,5 @@
 export { default as xai } from "./lib/plugin/xai.js";
 export { default as codex } from "./lib/plugin/codex.js";
 export { default as kiro } from "./lib/plugin/kiro.js";
+export { default as antigravity } from "./lib/plugin/antigravity.js";
+

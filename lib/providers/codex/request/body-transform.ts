@@ -65,7 +65,7 @@ export function modelAcceptsMaxEffort(model: string | undefined): boolean {
   const bare = model.includes("/")
     ? model.slice(model.lastIndexOf("/") + 1)
     : model;
-  return /^gpt-5\.6/i.test(bare);
+  return /^(?:gpt-5\.6|gpt-6|gpt-reserve)/i.test(bare);
 }
 
 export function normalizeCodexEffort(
@@ -240,45 +240,6 @@ export function isUltraEffortRejected(
     t.includes("reasoning") ||
     t.includes("effort")
   );
-}
-
-/**
- * ChatGPT Codex rejects `service_tier: fast` for models/accounts that do not
- * support Fast mode (400 `{"detail":"Unsupported service_tier: fast"}`).
- * Detect that 400 so fetch can retry once with the tier stripped.
- */
-export function isServiceTierRejected(
-  status: number,
-  bodyText: string | undefined,
-): boolean {
-  if (status !== 400) return false;
-  if (!bodyText) return false;
-  const t = bodyText.toLowerCase();
-  if (!t.includes("service_tier")) return false;
-  return (
-    t.includes("unsupported") ||
-    t.includes("not supported") ||
-    t.includes("invalid")
-  );
-}
-
-/**
- * Rewrite a JSON body string so `service_tier` is removed (standard tier).
- * Returns null when the body is not rewritable JSON or has no service_tier.
- */
-export function stripServiceTierFromBody(body: string): string | null {
-  try {
-    const parsed = JSON.parse(body) as Record<string, unknown>;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return null;
-    }
-    if (!("service_tier" in parsed)) return null;
-    const next = { ...parsed };
-    delete next.service_tier;
-    return JSON.stringify(next);
-  } catch {
-    return null;
-  }
 }
 
 /**

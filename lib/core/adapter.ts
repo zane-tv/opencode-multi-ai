@@ -15,7 +15,11 @@ import type { ProviderKind } from "./schemas.js";
 export type { ProviderKind } from "./schemas.js";
 
 /** OpenCode provider id registered by each plugin entry. */
-export type ProviderId = "xai-multi" | "codex-multi" | "kiro-multi";
+export type ProviderId =
+  | "xai-multi"
+  | "codex-multi"
+  | "kiro-multi"
+  | "antigravity-multi";
 
 /**
  * Headers init without relying on a DOM lib entry.
@@ -130,12 +134,6 @@ export interface ProviderDescriptor {
   };
 }
 
-/** Context for the optional client-error body-rewrite retry hook. */
-export interface ClientErrorRewriteContext {
-  status: number;
-  bodyText?: string;
-}
-
 /** HTTP-only request surface used by createRotationFetch. */
 export interface HttpTransportAdapter {
   resolveUrl(input: string | URL): string;
@@ -150,16 +148,6 @@ export interface HttpTransportAdapter {
   ): Classification | Promise<Classification>;
   classifyThrownError(err: unknown): Classification;
   recordSuccess(ctx: RecordSuccessContext): Promise<void>;
-  /**
-   * Optional one-shot workaround for a client-error the provider understands
-   * (e.g. ChatGPT Codex rejecting `service_tier: fast` on models that do not
-   * support Fast mode). Return a rewritten RequestInit to retry once on the
-   * SAME account without rotating, or undefined to surface the error as-is.
-   */
-  retryOnClientError?(
-    ctx: ClientErrorRewriteContext,
-    init: RequestInit | undefined,
-  ): RequestInit | undefined;
   probeQuota?(
     accessToken: string,
     account: ProbeQuotaAccount,
@@ -228,17 +216,6 @@ export interface ProviderAdapter {
 
   /** Classify thrown error (network, AbortError, InvalidGrant, …). */
   classifyThrownError(err: unknown): Classification;
-
-  /**
-   * Optional one-shot workaround for a known client-error (e.g. ChatGPT Codex
-   * rejecting `service_tier: fast`). Return a rewritten RequestInit to retry
-   * once on the SAME account without rotating, or undefined to surface the
-   * error as-is.
-   */
-  retryOnClientError?(
-    ctx: ClientErrorRewriteContext,
-    init: RequestInit | undefined,
-  ): RequestInit | undefined;
 
   /**
    * On success: record rate-limit (xai) or usage (codex) into manager.

@@ -539,41 +539,6 @@ export function createRotationFetch(
         );
       }
 
-      // One-shot provider workaround for a known client error (e.g. Codex
-      // rejecting service_tier=fast). Retry once on the SAME account with a
-      // rewritten body; never rotates the pool. The hook must return undefined
-      // once the body is fixed so this cannot loop.
-      if (
-        attempt.classification.kind === "unknown-client-error" &&
-        attempt.res &&
-        typeof adapter.retryOnClientError === "function"
-      ) {
-        const rewritten = adapter.retryOnClientError(
-          { status: attempt.res.status, bodyText: attempt.bodyText },
-          requestInit,
-        );
-        if (rewritten) {
-          discardBody(attempt.res);
-          attempt = await doRequest(
-            adapter,
-            resolvedUrl,
-            rewritten,
-            accessToken,
-            id,
-            organizationId,
-            promptCacheKey,
-          );
-          handled = await handleAttempt(
-            adapter,
-            manager,
-            provider,
-            attempt,
-            id,
-            { allowAuthRecover: false, warnEntitlement, record },
-          );
-        }
-      }
-
       switch (handled.action) {
         case "return":
           return handled.res;

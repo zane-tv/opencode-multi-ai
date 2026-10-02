@@ -1,5 +1,5 @@
 # Dependencies
-node_modules/
+/node_modules/
 
 # Build output
 dist/
@@ -16,3 +16,4 @@ multi-xai-models.json
 *.log
 .env
 .env.*
+.DS_Store

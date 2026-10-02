@@ -173,6 +173,16 @@ if [[ "$WITH_PLUGIN" -eq 1 ]]; then
   fi
 fi
 
+# --- install bundled smart skills (deep review, architect planner, codebase navigator, ui builder) ---
+SKILLS_SRC="$ROOT/skills"
+SKILLS_DEST="${OPENCODE_CONFIG_DIR:-$HOME/.config/opencode}/skills"
+if [[ -d "$SKILLS_SRC" ]]; then
+  echo ""
+  echo "==> installing bundled smart skills → $SKILLS_DEST"
+  mkdir -p "$SKILLS_DEST"
+  cp -R "$SKILLS_SRC/"* "$SKILLS_DEST/"
+fi
+
 export PATH="${HOME}/.local/bin:$PATH"
 hash -r 2>/dev/null || true
 

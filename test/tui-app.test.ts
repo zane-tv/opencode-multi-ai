@@ -33,7 +33,7 @@ import {
 } from "../lib/core/i18n.js";
 import { saveAccounts } from "../lib/core/storage.js";
 import type { AccountMetadata } from "../lib/core/schemas.js";
-import { footerBindingsForProvider } from "../lib/tui/action-helpers.js";
+import { TUI_BINDINGS } from "../lib/tui/action-helpers.js";
 import { formatDateTime, formatUntil } from "../lib/core/format-time.js";
 
 const probeXai = vi.fn();
@@ -107,15 +107,6 @@ function makeCodex(
     planType: "plus",
     ...overrides,
   } as AccountMetadata;
-}
-
-/** Minimal unsigned JWT for import tests; signature segment is ignored by decodeJwt. */
-function fakeJwt(payload: Record<string, unknown>, sigLen = 64): string {
-  const header = Buffer.from(
-    JSON.stringify({ alg: "none", typ: "JWT" }),
-  ).toString("base64url");
-  const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
-  return `${header}.${body}.${"s".repeat(sigLen)}`;
 }
 
 async function seedStore(storePath: string): Promise<void> {
@@ -431,37 +422,18 @@ const hasOpenTuiFfi = typeof (globalThis as { Bun?: unknown }).Bun !== "undefine
     expect(getLocale()).toBe("vi");
   });
 
-  it("help lists only active-agent bindings (xAI tab hides Codex/Kiro-only)", async () => {
-    // Test harness defaults initialTab to xAI (see launchTui).
+  it("footer entries derive from TUI_BINDINGS; help lists every bound action", async () => {
     harness = await launchTui({ storePath, settingsPath });
     const setup = harness.setup();
     setup.mockInput.pressKey("?");
     await setup.renderOnce();
     await setup.flush().catch(() => undefined);
     const help = frameOf(setup);
-    for (const k of ["a", "A", "s", "e", "d"] as const) {
-      expect(help, `help missing key ${k}`).toContain(k);
+    for (const b of TUI_BINDINGS) {
+      if (!b.available) continue;
+      expect(help, `help missing key ${b.key}`).toContain(b.key);
     }
-    expect(help).toMatch(/xAI shortcuts|xAI OAuth/i);
-    expect(help).not.toMatch(/Import OAuth JSON|op-codex import/i);
-    expect(help).not.toMatch(/\bi\s+API key|kiro-cli/i);
-    expect(help).not.toMatch(/F:codex|Codex Fast/i);
     expect(help).not.toMatch(/\bm\s+magic\b/i);
-
-    setup.mockInput.pressKey("?");
-    await setup.renderOnce();
-    setup.mockInput.pressKey("1");
-    await setup.renderOnce();
-    setup.mockInput.pressKey("?");
-    await setup.renderOnce();
-    const codexHelp = frameOf(setup);
-    expect(codexHelp).toMatch(/OAuth JSON import|Import OAuth JSON/i);
-    expect(codexHelp).toMatch(/F:codex|Codex Fast/i);
-    expect(codexHelp).not.toMatch(/kiro-cli|API key \(ksk_/i);
-    // footerBindingsForProvider is pure — sanity for codex-only keys
-    expect(
-      footerBindingsForProvider("codex").some((b) => b.action === "add-codex-json"),
-    ).toBe(true);
   });
 
   it("codex help has OAuth JSON import lines; xai help does not", async () => {
@@ -475,7 +447,6 @@ const hasOpenTuiFfi = typeof (globalThis as { Bun?: unknown }).Bun !== "undefine
     await setup.renderOnce();
     let help = frameOf(setup);
     expect(help).toMatch(/OAuth JSON import|import --file|Paste OAuth JSON/i);
-    expect(help).toMatch(/F:codex|Codex Fast/i);
 
     setup.mockInput.pressKey("?");
     await setup.renderOnce();
@@ -485,8 +456,6 @@ const hasOpenTuiFfi = typeof (globalThis as { Bun?: unknown }).Bun !== "undefine
     await setup.renderOnce();
     help = frameOf(setup);
     expect(help).not.toMatch(/op-codex import/);
-    expect(help).toMatch(/xAI OAuth|Device code/i);
-    expect(help).not.toMatch(/F:codex|Codex Fast/i);
   });
 
   it("fixed timestamp formats EN vs VI via format-time (TZ=UTC)", () => {
@@ -975,53 +944,6 @@ const hasOpenTuiFfi = typeof (globalThis as { Bun?: unknown }).Bun !== "undefine
     await new Promise((r) => setTimeout(r, 250));
     expect(calls).toBe(1);
     expect(manager.providerView("xai").get("added-once")).toBeTruthy();
-  });
-
-  it("codex JSON wizard paste imports >1KB OAuth blob without truncation", async () => {
-    const xdg = tmpPath("xdg");
-    const prevXdg = process.env.XDG_DATA_HOME;
-    process.env.XDG_DATA_HOME = xdg;
-    try {
-      harness = await launchTui({
-        storePath,
-        settingsPath,
-        initialTab: "codex",
-      });
-      const { manager, setup } = harness;
-      const s = setup();
-      const access = fakeJwt(
-        {
-          exp: Math.floor(Date.now() / 1000) + 3600,
-          email: "paste@example.com",
-          "https://api.openai.com/auth": {
-            chatgpt_account_id: "paste-acct",
-          },
-        },
-        900,
-      );
-      const blob = JSON.stringify({
-        accessToken: access,
-        refreshToken: "rt-paste-1",
-        email: "paste@example.com",
-      });
-      expect(blob.length).toBeGreaterThan(1000);
-
-      s.mockInput.pressKey("o");
-      await s.renderOnce();
-      await new Promise((r) => setTimeout(r, 30));
-      await s.mockInput.pasteBracketedText(blob);
-      await s.renderOnce();
-      s.mockInput.pressEnter();
-      await s.renderOnce();
-      await new Promise((r) => setTimeout(r, 300));
-
-      const acct = manager.providerView("codex").get("paste-acct");
-      expect(acct).toBeTruthy();
-      expect(acct?.refreshToken).toBe("rt-paste-1");
-    } finally {
-      if (prevXdg === undefined) delete process.env.XDG_DATA_HOME;
-      else process.env.XDG_DATA_HOME = prevXdg;
-    }
   });
 
   it("deferred live result after tab switch cannot repaint new tab", async () => {

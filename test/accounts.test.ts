@@ -255,6 +255,32 @@ describe.each(PROVIDER_CASES)(
             manager.get("codex", "ok")?.priority ?? 0,
           );
         });
+
+        it("recordUsage clears future quotaResetAt when primary is no longer full", async () => {
+          const futureReset = Date.now() + 4 * 24 * HOUR;
+          const acct = makeAccount("codex", "recovered", {
+            priority: 5,
+            quotaResetAt: futureReset,
+            lastSwitchReason: "quota-exhausted",
+          });
+          if (acct.provider !== "codex") throw new Error("expected codex");
+          acct.primaryUsedPercent = 100;
+          await writeStore(storePath, [acct]);
+          const manager = new AccountManager(storePath);
+          await manager.load();
+
+          await manager.recordUsage("codex", "recovered", {
+            primaryUsedPercent: 0,
+            primaryWindowMinutes: 300,
+            primaryResetAt: Date.now() + 5 * HOUR,
+            secondaryWindowMinutes: 10080,
+            secondaryUsedPercent: 0,
+          });
+
+          const after = manager.get("codex", "recovered");
+          expect(after?.quotaResetAt).toBeUndefined();
+          expect(after?.lastSwitchReason).toBeUndefined();
+        });
       }
 
       it("markQuotaExhausted demotes exhausted and promotes next sticky to #1", async () => {
@@ -887,7 +913,7 @@ describe.each(PROVIDER_CASES)(
         original.planTier = 3;
         original.planName = "SuperGrok";
         original.billingRemainingPercent = 42;
-      } else {
+      } else if (original.provider === "codex") {
         original.organizationId = "org-original";
         original.planType = "team";
         original.primaryUsedPercent = 25;

@@ -228,19 +228,55 @@ export async function fetchModelsDevOpenAi(): Promise<
 export async function fetchLiveCodexModelIds(
   accessToken: string,
 ): Promise<string[]> {
-  // Prefer OpenAI-compatible shape if the backend ever serves it under base URL.
-  const data = (await fetchJson(`${CODEX_BASE_URL}/models`, {
-    headers: {
-      authorization: `Bearer ${accessToken}`,
-      accept: "application/json",
-    },
-  })) as { data?: Array<{ id?: string }> };
+  try {
+    // Official Codex CLI models endpoint
+    const url = `${CODEX_BASE_URL}/codex/models?client_version=0.154.0`;
+    const res = (await fetchJson(url, {
+      headers: {
+        authorization: `Bearer ${accessToken}`,
+        accept: "application/json",
+        originator: "codex_cli_rs",
+      },
+    })) as {
+      models?: Array<{ slug?: string; id?: string; visibility?: string }>;
+      data?: Array<{ id?: string }>;
+    };
 
-  const ids = (data.data ?? [])
-    .map((m) => m.id)
-    .filter((id): id is string => typeof id === "string" && id.length > 0)
-    .filter((id) => !SKIP_MODEL_RE.test(id));
-  return [...new Set(ids)];
+    if (Array.isArray(res.models)) {
+      const ids = res.models
+        .map((m) => m.slug || m.id)
+        .filter((id): id is string => typeof id === "string" && id.length > 0)
+        .filter((id) => !SKIP_MODEL_RE.test(id));
+      if (ids.length > 0) return [...new Set(ids)];
+    }
+    if (Array.isArray(res.data)) {
+      const ids = res.data
+        .map((m) => m.id)
+        .filter((id): id is string => typeof id === "string" && id.length > 0)
+        .filter((id) => !SKIP_MODEL_RE.test(id));
+      if (ids.length > 0) return [...new Set(ids)];
+    }
+  } catch {
+    // Fall back to standard /models probe
+  }
+
+  try {
+    // Prefer OpenAI-compatible shape if the backend ever serves it under base URL.
+    const data = (await fetchJson(`${CODEX_BASE_URL}/models`, {
+      headers: {
+        authorization: `Bearer ${accessToken}`,
+        accept: "application/json",
+      },
+    })) as { data?: Array<{ id?: string }> };
+
+    const ids = (data.data ?? [])
+      .map((m) => m.id)
+      .filter((id): id is string => typeof id === "string" && id.length > 0)
+      .filter((id) => !SKIP_MODEL_RE.test(id));
+    return [...new Set(ids)];
+  } catch {
+    return [];
+  }
 }
 
 /** Nested config keys that get a safe deep merge instead of full replacement. */
