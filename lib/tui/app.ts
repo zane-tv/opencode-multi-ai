@@ -40,6 +40,7 @@ import {
 import { isInvalidGrantError } from "../core/rotation-fetch.js";
 import type {
   AccountMetadata,
+  AntigravityAccountMetadata,
   CodexAccountMetadata,
   CooldownReason,
   KiroAccountMetadata,
@@ -527,6 +528,17 @@ function remainingPercent(account: AccountMetadata): number | undefined {
     }
     return Math.max(0, Math.min(100, 100 - (used / limit) * 100));
   }
+  if (account.provider === "antigravity") {
+    const ag = account as AntigravityAccountMetadata;
+    const used = ag.primaryUsedPercent;
+    if (typeof used === "number" && Number.isFinite(used)) {
+      return leftPercent(used);
+    }
+    if (typeof ag.quotaResetAt === "number" && ag.quotaResetAt > Date.now()) {
+      return 0;
+    }
+    return undefined;
+  }
   const used = (account as CodexAccountMetadata).primaryUsedPercent;
   const win = (account as CodexAccountMetadata).primaryWindowMinutes;
   if (isWindowDisabled(win)) return undefined;
@@ -557,7 +569,7 @@ function joinChunks(chunks: TextChunk[]): StyledText {
   return new StyledText(chunks);
 }
 
-function styledBrand(): StyledText {
+function styledBrand(tab?: TuiTab): StyledText {
   const chunks: TextChunk[] = [];
   chunks.push(bold(fg(T.codexBright)("◈")));
   chunks.push(fg(T.brandSep)("·"));
@@ -583,7 +595,7 @@ function styledBrand(): StyledText {
   chunks.push(fg(T.textDim)("  ·  "));
   chunks.push(fg(T.key)("m"));
   chunks.push(fg(T.textDim)(":"));
-  chunks.push(fg(T.cooling)(selectionStrategyLabel(getSelectionStrategy())));
+  chunks.push(fg(T.cooling)(selectionStrategyLabel(getSelectionStrategy(tab))));
   chunks.push(fg(T.textDim)("  ·  "));
   chunks.push(fg(T.key)("F"));
   chunks.push(fg(T.textDim)(":"));
@@ -1286,8 +1298,8 @@ function styledDetail(
     ...labelValue(
       "role",
       isSticky
-        ? getSelectionStrategy() === "round-robin"
-          ? "★ ACTIVE · list #1 after s · RR rotates next"
+        ? getSelectionStrategy(tab) === "round-robin"
+          ? "★ ACTIVE · round-robin (rotates next request)"
           : "★ ACTIVE · sticky (s promotes to list #1)"
         : "standby · [ ] move · s activate",
       isSticky ? T.ready : T.textMuted,
@@ -1491,6 +1503,67 @@ function styledDetail(
             "workspace",
             `${ws} · cred: ${cookieSet ? "set" : "env"}`,
             T.textMuted,
+          ),
+        );
+      }
+    }
+  } else if (account.provider === "antigravity") {
+    const ag = account as AntigravityAccountMetadata;
+    const plan = ag.planType || ag.tier || ag.accountType;
+    if (plan) {
+      chunks.push(...labelValue("plan", plan, hue.bright));
+    }
+    if (ag.projectId) {
+      chunks.push(...labelValue("project", ag.projectId, T.textMuted));
+    }
+    const primaryLeft =
+      typeof ag.primaryUsedPercent === "number"
+        ? leftPercent(ag.primaryUsedPercent)
+        : undefined;
+    if (primaryLeft !== undefined) {
+      const until =
+        typeof ag.primaryResetAt === "number" && ag.primaryResetAt > now
+          ? ` · resets ${formatUntil(ag.primaryResetAt, now)}`
+          : "";
+      chunks.push(
+        ...labelValue(
+          "primary",
+          `${primaryLeft}% left (Gemini)${until}`,
+          meterColor(primaryLeft),
+        ),
+      );
+    }
+    const secondaryLeft =
+      typeof ag.secondaryUsedPercent === "number"
+        ? leftPercent(ag.secondaryUsedPercent)
+        : undefined;
+    if (secondaryLeft !== undefined) {
+      const until =
+        typeof ag.secondaryResetAt === "number" && ag.secondaryResetAt > now
+          ? ` · resets ${formatUntil(ag.secondaryResetAt, now)}`
+          : "";
+      chunks.push(
+        ...labelValue(
+          "secondary",
+          `${secondaryLeft}% left (Claude)${until}`,
+          meterColor(secondaryLeft),
+        ),
+      );
+    }
+    if (ag.modelQuotas && typeof ag.modelQuotas === "object") {
+      for (const [modelId, mq] of Object.entries(ag.modelQuotas)) {
+        if (!mq || typeof mq.remainingPercent !== "number") continue;
+        const name = mq.displayName || modelId;
+        const shortName = name.length > 13 ? `${name.slice(0, 13)}…` : name;
+        const until =
+          typeof mq.resetAt === "number" && mq.resetAt > now
+            ? ` · resets ${formatUntil(mq.resetAt, now)}`
+            : "";
+        chunks.push(
+          ...labelValue(
+            shortName,
+            `${Math.round(mq.remainingPercent)}% left${until}`,
+            meterColor(mq.remainingPercent),
           ),
         );
       }
@@ -1721,7 +1794,7 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
 
   const brandText = new TextRenderable(renderer, {
     id: "brand",
-    content: styledBrand(),
+    content: styledBrand(activeTab),
     height: 1,
     width: "100%",
   });
@@ -2064,7 +2137,7 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
       const hue = providerHue(activeTab);
 
       applyProviderChrome(activeTab);
-      safeSetContent(brandText, styledBrand());
+      safeSetContent(brandText, styledBrand(activeTab));
       safeSetContent(tabText, styledTabBar(activeTab));
       void renderTabBar(activeTab);
       safeSetContent(
@@ -3105,9 +3178,14 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
         account.provider === "opencode-go"
           ? (account as OpenCodeGoAccountMetadata)
           : undefined;
+      const ag =
+        account.provider === "antigravity"
+          ? (account as AntigravityAccountMetadata)
+          : undefined;
       const probeArgs = {
         accountId: account.accountId,
         organizationId: orgId,
+        projectId: ag?.projectId,
         authMethod: kiro?.authMethod,
         region: kiro?.region,
         oidcRegion: kiro?.oidcRegion,
@@ -3227,6 +3305,34 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
       }
 
       if (tab === "antigravity") {
+        const rawModelQuotas = asRecord(result.modelQuotas);
+        let modelQuotas: Record<string, { displayName?: string; remainingPercent: number; resetAt?: number }> | undefined;
+        if (rawModelQuotas) {
+          modelQuotas = {};
+          for (const [k, vModel] of Object.entries(rawModelQuotas)) {
+            const entry = asRecord(vModel);
+            if (entry) {
+              const remaining = asFiniteNumber(entry.remainingPercent);
+              if (remaining !== undefined) {
+                modelQuotas[k] = {
+                  displayName: asString(entry.displayName),
+                  remainingPercent: remaining,
+                  resetAt: asFiniteNumber(entry.resetAt),
+                };
+              }
+            }
+          }
+        }
+        await v.recordUsage(account.accountId, {
+          planType: asString(result.planType),
+          primaryUsedPercent: asFiniteNumber(result.primaryUsedPercent),
+          primaryResetAt: asFiniteNumber(result.primaryResetAt),
+          secondaryUsedPercent: asFiniteNumber(result.secondaryUsedPercent),
+          secondaryResetAt: asFiniteNumber(result.secondaryResetAt),
+          projectId: asString(result.projectId),
+          modelQuotas,
+          observedAt: asFiniteNumber(result.observedAt) ?? Date.now(),
+        });
         return "success";
       }
 
@@ -3375,7 +3481,6 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
       case "tab-opencode-go":
         switchTab("opencode-go");
         return;
-        return;
       case "tab-next":
         switchTab(nextTab(activeTab));
         return;
@@ -3391,9 +3496,9 @@ export async function runTui(opts: RunTuiOptions = {}): Promise<void> {
         return;
       }
       case "cycle-selection": {
-        const next = cycleSelectionStrategy();
+        const next = cycleSelectionStrategy(activeTab);
         setStatus({
-          text: `selection: ${selectionStrategyLabel(next)}`,
+          text: `${TAB_LABELS[activeTab]} selection: ${selectionStrategyLabel(next)}`,
           tone: "ok",
         });
         refreshViews();

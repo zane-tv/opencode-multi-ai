@@ -60,6 +60,8 @@ function extractText(content: OpenAiMessage["content"]): string {
 export function resolveInternalModel(
   modelName?: string,
   effort?: string,
+  explicitBudget?: number,
+  isToolFollowUp?: boolean,
 ): {
   internalModel: string;
   thinkingBudget?: number;
@@ -68,29 +70,64 @@ export function resolveInternalModel(
     .replace(/^(antigravity-multi\/|antigravity\/|ag\/)/, "")
     .toLowerCase();
 
+  const normalizedEffort = typeof effort === "string" ? effort.trim().toLowerCase() : undefined;
+
   let customBudget: number | undefined;
-  if (effort === "low") customBudget = 1024;
-  else if (effort === "medium") customBudget = 4096;
-  else if (effort === "high") customBudget = 8192;
+  if (typeof explicitBudget === "number" && Number.isFinite(explicitBudget)) {
+    customBudget = Math.max(0, Math.floor(explicitBudget));
+  } else if (
+    normalizedEffort === "none" ||
+    normalizedEffort === "zero" ||
+    normalizedEffort === "off" ||
+    normalizedEffort === "disabled"
+  ) {
+    customBudget = 0;
+  } else if (normalizedEffort === "low") {
+    customBudget = 1024;
+  } else if (normalizedEffort === "medium") {
+    customBudget = 4096;
+  } else if (
+    normalizedEffort === "high" ||
+    normalizedEffort === "max" ||
+    normalizedEffort === "xhigh"
+  ) {
+    customBudget = 8192;
+  }
 
   // 1. Claude Opus (explicit or fuzzy match)
+  // Default to 2048 tokens when not specified (saving 75% output tokens vs legacy 8192).
+  // For tool follow-up steps with no explicit effort, cap at 1024 tokens to stop token bleed.
   if (raw.includes("opus")) {
-    return { internalModel: "claude-opus-4-6-thinking", thinkingBudget: customBudget ?? 8192 };
+    const defaultBudget = isToolFollowUp ? 1024 : 2048;
+    return {
+      internalModel: "claude-opus-4-6-thinking",
+      thinkingBudget: customBudget !== undefined ? customBudget : defaultBudget,
+    };
   }
 
   // 2. Claude Sonnet or any other Claude reference
+  // Default to 1024 tokens when not specified (saving 75% output tokens vs legacy 4096).
   if (raw.includes("sonnet") || raw.includes("claude")) {
-    return { internalModel: "claude-sonnet-4-6", thinkingBudget: customBudget ?? 4096 };
+    return {
+      internalModel: "claude-sonnet-4-6",
+      thinkingBudget: customBudget !== undefined ? customBudget : 1024,
+    };
   }
 
   // 3. Open weights / GPT-OSS
   if (raw.includes("gpt-oss") || raw.includes("oss")) {
-    return { internalModel: "gpt-oss-120b-medium", thinkingBudget: customBudget ?? 4096 };
+    return {
+      internalModel: "gpt-oss-120b-medium",
+      thinkingBudget: customBudget !== undefined ? customBudget : 2048,
+    };
   }
 
   // 4. Gemini Pro flagship models
   if (raw.includes("pro") || raw.includes("3.1")) {
-    return { internalModel: "gemini-3.1-pro-low", thinkingBudget: customBudget ?? 4096 };
+    return {
+      internalModel: "gemini-3.1-pro-low",
+      thinkingBudget: customBudget !== undefined ? customBudget : 2048,
+    };
   }
 
   // 5. Zero-thinking Flash (instant command/edit execution)
@@ -111,17 +148,26 @@ export function resolveInternalModel(
     (raw.includes("flash") && raw.includes("high")) ||
     raw.includes("agent")
   ) {
-    return { internalModel: "gemini-3.6-flash-high", thinkingBudget: customBudget ?? 8192 };
+    return {
+      internalModel: "gemini-3.6-flash-high",
+      thinkingBudget: customBudget !== undefined ? customBudget : 8192,
+    };
   }
 
   // 7. Gemini 3.7 Flash Medium (Balanced)
   if (raw.includes("3.7") || (raw.includes("flash") && raw.includes("medium"))) {
-    return { internalModel: "gemini-3.6-flash-low", thinkingBudget: customBudget ?? 4096 };
+    return {
+      internalModel: "gemini-3.6-flash-low",
+      thinkingBudget: customBudget !== undefined ? customBudget : 4096,
+    };
   }
 
   // 8. Gemini 3.6 Flash (Fast / Light Reasoning)
   if (raw.includes("3.6") || (raw.includes("flash") && raw.includes("low"))) {
-    return { internalModel: "gemini-3.6-flash-low", thinkingBudget: customBudget ?? 2048 };
+    return {
+      internalModel: "gemini-3.6-flash-low",
+      thinkingBudget: customBudget !== undefined ? customBudget : 2048,
+    };
   }
 
   // 9. Generic Flash fallback
@@ -129,14 +175,17 @@ export function resolveInternalModel(
     return { internalModel: "gemini-3-flash", thinkingBudget: 0 };
   }
 
-  // Default fallback for unknown model: default to deep reasoning Gemini rather than downgrading
-  return { internalModel: "gemini-3.6-flash-high", thinkingBudget: customBudget ?? 8192 };
+  // Default fallback for unknown model: default to deep reasoning Gemini
+  return {
+    internalModel: "gemini-3.6-flash-high",
+    thinkingBudget: customBudget !== undefined ? customBudget : 2048,
+  };
 }
 
 const AGENT_CODE_REVIEW_PROMPT =
   "Core Principles for Deep Reasoning, Architecture & Code Review:\n" +
-  "1. Deep Thinking & Root Cause: Always reason deeply about problems before generating solutions. Identify root causes, architectural constraints, and side-effects across the codebase.\n" +
-  "2. Comprehensive Code Navigation: Avoid repeated micro-reads (reading 20-50 lines repeatedly). Read complete functions, classes, or files once to understand full scope, call-graphs, and dependencies before proposing edits.\n" +
+  "1. Targeted & Concise: Output code and reasoning directly without unnecessary filler; focus deeply on core architecture and logic.\n" +
+  "2. Comprehensive Code Navigation: Read complete functions, classes, or files once before proposing edits; avoid repeated micro-reads.\n" +
   "3. Spec-Driven Planning: For multi-file changes or refactors, break tasks down into layer-by-layer architectural steps with explicit risk analysis and verification test plans.\n" +
   "4. Strict Code Quality & Safety: Zero resource leaks (dispose streams/timers/controllers), enforce null safety, async/concurrency correctness, and clean error handling. Never swallow errors with empty catch blocks.\n" +
   "5. Responsive & Resilient UI: Ensure layout safety (prevent RenderFlex overflows), keep components modular, and use modern idiomatic patterns.";
@@ -152,11 +201,44 @@ export function transformOpenAiToGemini(
   const reasoningEffort =
     typeof body.reasoning_effort === "string"
       ? body.reasoning_effort
-      : undefined;
-  const { internalModel, thinkingBudget } = resolveInternalModel(rawModel, reasoningEffort);
-  const mappedModelName = internalModel;
+      : typeof body.reasoningEffort === "string"
+        ? body.reasoningEffort
+        : typeof body.effort === "string"
+          ? body.effort
+          : undefined;
+
+  let explicitBudget: number | undefined;
+  if (typeof body.thinking_budget === "number") {
+    explicitBudget = body.thinking_budget;
+  } else if (typeof body.thinkingBudget === "number") {
+    explicitBudget = body.thinkingBudget;
+  } else if (typeof body.thinkingConfig === "object" && body.thinkingConfig !== null) {
+    const tc = body.thinkingConfig as Record<string, unknown>;
+    if (typeof tc.thinkingBudget === "number") {
+      explicitBudget = tc.thinkingBudget;
+    } else if (tc.type === "disabled" || tc.thinkingBudget === 0) {
+      explicitBudget = 0;
+    }
+  }
 
   const rawMessages = Array.isArray(body.messages) ? body.messages : [];
+  const lastMsg = rawMessages[rawMessages.length - 1];
+  const isToolFollowUp =
+    Boolean(lastMsg) &&
+    (lastMsg.role === "tool" ||
+      (lastMsg.role === "user" &&
+        Array.isArray(lastMsg.content) &&
+        (lastMsg.content as Array<Record<string, unknown>>).some(
+          (c) => c?.type === "tool_result",
+        )));
+
+  const { internalModel, thinkingBudget } = resolveInternalModel(
+    rawModel,
+    reasoningEffort,
+    explicitBudget,
+    isToolFollowUp,
+  );
+  const mappedModelName = internalModel;
   const contents: GeminiContent[] = [];
 
   // Extract system prompt if present

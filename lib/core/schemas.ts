@@ -309,7 +309,23 @@ function validateKiroAccount(
 const AntigravitySpecificFields = {
   projectId: z.string().optional(),
   tier: z.string().optional(),
+  planType: z.string().optional(),
   accountType: z.string().optional(),
+  primaryUsedPercent: z.number().optional(),
+  primaryWindowMinutes: z.number().optional(),
+  primaryResetAt: z.number().optional(),
+  secondaryUsedPercent: z.number().optional(),
+  secondaryWindowMinutes: z.number().optional(),
+  secondaryResetAt: z.number().optional(),
+  modelQuotas: z
+    .record(
+      z.object({
+        displayName: z.string().optional(),
+        remainingPercent: z.number(),
+        resetAt: z.number().optional(),
+      }),
+    )
+    .optional(),
   usageObservedAt: z.number().optional(),
 } as const;
 

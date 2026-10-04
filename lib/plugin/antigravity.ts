@@ -20,6 +20,7 @@ import {
 import { importAntigravityFrom9Router } from "../providers/antigravity/auth/import-9router.js";
 import { startAntigravityBackgroundPrewarm } from "../providers/antigravity/auth/prewarm.js";
 import { ensureBundledSkillsInstalled } from "../core/skills-sync.js";
+import { getSelectionStrategy } from "../core/selection-strategy.js";
 
 type OAuthSuccess = {
   type: "success";
@@ -58,14 +59,14 @@ const plugin: Plugin = async () => {
         p.options = {
           baseURL: ANTIGRAVITY_BASE_URL,
           apiKey: DUMMY_API_KEY,
-          accountSelectionStrategy: "sticky",
+          accountSelectionStrategy: getSelectionStrategy("antigravity"),
         };
       } else {
         const opts = p.options as Record<string, unknown>;
         if (opts.baseURL === undefined) opts.baseURL = ANTIGRAVITY_BASE_URL;
         if (opts.apiKey === undefined) opts.apiKey = DUMMY_API_KEY;
         if (opts.accountSelectionStrategy === undefined) {
-          opts.accountSelectionStrategy = "sticky";
+          opts.accountSelectionStrategy = getSelectionStrategy("antigravity");
         }
       }
 

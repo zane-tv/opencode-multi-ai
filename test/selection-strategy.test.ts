@@ -27,6 +27,7 @@ const settingsTmp = path.join(
 afterEach(() => {
   resetSelectionStrategyForTests();
   delete process.env.MULTI_AI_SELECTION_STRATEGY;
+  delete process.env.MULTI_AI_ANTIGRAVITY_SELECTION_STRATEGY;
   delete process.env.MULTI_AI_SETTINGS_PATH;
   try {
     fs.unlinkSync(tmp);
@@ -133,3 +134,78 @@ describe("round-robin selectAccount", () => {
     expect(isRotationReady(deadish, Date.now())).toBe(false);
   });
 });
+
+describe("antigravity selection strategy toggling", () => {
+  it("defaults to sticky and toggles between sticky and round-robin", () => {
+    process.env.MULTI_AI_SETTINGS_PATH = settingsTmp;
+    resetSelectionStrategyForTests();
+
+    expect(getSelectionStrategy("antigravity")).toBe("sticky");
+
+    // First cycle -> round-robin
+    expect(cycleSelectionStrategy("antigravity")).toBe("round-robin");
+    expect(getSelectionStrategy("antigravity")).toBe("round-robin");
+
+    // Second cycle -> sticky (2-state toggle)
+    expect(cycleSelectionStrategy("antigravity")).toBe("sticky");
+    expect(getSelectionStrategy("antigravity")).toBe("sticky");
+
+    // Third cycle -> round-robin again
+    expect(cycleSelectionStrategy("antigravity")).toBe("round-robin");
+    expect(getSelectionStrategy("antigravity")).toBe("round-robin");
+  });
+
+  it("persists antigravitySelectionStrategy to settings file", () => {
+    process.env.MULTI_AI_SETTINGS_PATH = settingsTmp;
+    resetSelectionStrategyForTests();
+
+    setSelectionStrategy("round-robin", true, "antigravity");
+    const content = JSON.parse(fs.readFileSync(settingsTmp, "utf8")) as Record<string, unknown>;
+    expect(content.antigravitySelectionStrategy).toBe("round-robin");
+
+    resetSelectionStrategyForTests();
+    expect(getSelectionStrategy("antigravity")).toBe("round-robin");
+  });
+
+  it("rotates between ready antigravity accounts in round-robin mode", async () => {
+    const mgr = new AccountManager(tmp);
+    await mgr.load();
+    const now = Date.now();
+
+    const agAcc = (id: string, pri: number): AccountMetadata => ({
+      provider: "antigravity",
+      accountId: id,
+      refreshToken: "rt-" + id,
+      accessToken: "at-" + id,
+      expiresAt: now + 3600_000,
+      enabled: true,
+      priority: pri,
+      addedAt: now,
+      lastUsed: 0,
+      lastSwitchReason: "initial",
+      subscriptionStatus: "active",
+      flaggedForRemoval: false,
+      entitlementBlocked: false,
+      tags: [],
+    });
+
+    await mgr.add(agAcc("ag-1", 10));
+    await mgr.add(agAcc("ag-2", 20));
+    await mgr.add(agAcc("ag-3", 30));
+
+    await mgr.switchTo("antigravity", "ag-3");
+
+    const attempted = new Set<string>();
+    const first = mgr.selectAccount("antigravity", attempted, "round-robin");
+    expect(first?.accountId).toBe("ag-2");
+    attempted.add(first!.accountId);
+
+    const second = mgr.selectAccount("antigravity", attempted, "round-robin");
+    expect(second?.accountId).toBe("ag-1");
+    attempted.add(second!.accountId);
+
+    const third = mgr.selectAccount("antigravity", attempted, "round-robin");
+    expect(third?.accountId).toBe("ag-3");
+  });
+});
+

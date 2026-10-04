@@ -46,7 +46,7 @@ function asRecord(value: unknown): Record<string, unknown> {
     : {};
 }
 
-function parseOpenAiBody(init?: RequestInit): {
+export function parseOpenAiBody(init?: RequestInit): {
   messages: OpenCodeMessage[];
   tools?: OpenCodeTool[];
   system?: string;
@@ -65,13 +65,48 @@ function parseOpenAiBody(init?: RequestInit): {
     ? (body.tools as OpenCodeTool[])
     : undefined;
   const model = typeof body.model === "string" ? body.model : "auto";
+  const thinkingConfig = asRecord(body.thinkingConfig);
+  const reasoningEffort =
+    typeof body.reasoning_effort === "string"
+      ? body.reasoning_effort
+      : typeof body.reasoningEffort === "string"
+        ? body.reasoningEffort
+        : undefined;
+
+  const isDisabled =
+    body.thinking === false ||
+    thinkingConfig.type === "disabled" ||
+    thinkingConfig.thinkingBudget === 0 ||
+    reasoningEffort === "none" ||
+    reasoningEffort === "off";
+
+  const budgetRaw =
+    typeof thinkingConfig.thinkingBudget === "number"
+      ? thinkingConfig.thinkingBudget
+      : typeof body.thinking_budget === "number"
+        ? body.thinking_budget
+        : typeof body.thinkingBudget === "number"
+          ? body.thinkingBudget
+          : reasoningEffort === "low"
+            ? 2048
+            : reasoningEffort === "medium"
+              ? 4096
+              : reasoningEffort === "high"
+                ? 8192
+                : undefined;
+
   const thinking =
-    body.thinking === true ||
-    model.includes("thinking") ||
-    asRecord(body.thinkingConfig).type === "enabled";
-  const budgetRaw = asRecord(body.thinkingConfig).thinkingBudget;
-  const thinkingBudget =
-    typeof budgetRaw === "number" ? budgetRaw : 16_384;
+    !isDisabled &&
+    (body.thinking === true ||
+      model.includes("thinking") ||
+      thinkingConfig.type === "enabled" ||
+      typeof budgetRaw === "number");
+
+  const thinkingBudget = isDisabled
+    ? 0
+    : typeof budgetRaw === "number"
+      ? budgetRaw
+      : 2048;
   const system =
     typeof body.system === "string"
       ? body.system

@@ -54,4 +54,34 @@ describe("Antigravity Adapter", () => {
     const subtitle = antigravityAdapter.listSubtitle(account, now);
     expect(subtitle).toBe("recovering · 45m left");
   });
+
+  it("formats quota in listSubtitle and detailLines identically to Codex style", () => {
+    const now = Date.now();
+    const account = {
+      accountId: "ag-test-3",
+      email: "pro@gmail.com",
+      planType: "Google AI Pro",
+      primaryUsedPercent: 15, // 85% remaining
+      primaryResetAt: now + 3600_000,
+      secondaryUsedPercent: 40, // 60% remaining
+      secondaryResetAt: now + 86400_000,
+      projectId: "my-companion-proj",
+    };
+
+    const subtitle = antigravityAdapter.listSubtitle(account, now);
+    expect(subtitle).toContain("Google AI Pro");
+    expect(subtitle).toContain("85% left");
+
+    const details = antigravityAdapter.detailLines(account, now);
+    expect(details).toContain("pro@gmail.com");
+    expect(details).toContain("plan: Google AI Pro");
+    expect(details).toContain("project: my-companion-proj");
+    expect(details.some((l) => l.includes("primary: 85% left (Gemini)"))).toBe(true);
+    expect(details.some((l) => l.includes("secondary: 60% left (Claude)"))).toBe(true);
+  });
+
+  it("exposes probeQuota function", () => {
+    expect(typeof antigravityAdapter.probeQuota).toBe("function");
+  });
 });
+

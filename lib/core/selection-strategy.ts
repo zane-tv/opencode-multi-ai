@@ -11,7 +11,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import type { AccountSelectionStrategy } from "./schemas.js";
+import type { AccountSelectionStrategy, ProviderKind } from "./schemas.js";
 
 const STRATEGIES: readonly AccountSelectionStrategy[] = [
   "sticky",
@@ -19,8 +19,9 @@ const STRATEGIES: readonly AccountSelectionStrategy[] = [
   "lowest-usage",
 ] as const;
 
-let cached: AccountSelectionStrategy | undefined;
-let cachedAt = 0;
+let cachedGlobal: AccountSelectionStrategy | undefined;
+let cachedGlobalAt = 0;
+const cachedByProvider: Partial<Record<ProviderKind, { strategy: AccountSelectionStrategy; at: number }>> = {};
 const CACHE_MS = 2_000;
 
 export function defaultSettingsPath(): string {
@@ -54,7 +55,7 @@ function normalizeStrategy(
   return null;
 }
 
-function readSettingsStrategy(): AccountSelectionStrategy | null {
+function readSettingsStrategy(provider?: ProviderKind): AccountSelectionStrategy | null {
   try {
     const p = defaultSettingsPath();
     if (!fs.existsSync(p)) return null;
@@ -62,6 +63,17 @@ function readSettingsStrategy(): AccountSelectionStrategy | null {
       string,
       unknown
     >;
+    if (provider === "antigravity") {
+      const agRaw =
+        (typeof data.antigravitySelectionStrategy === "string"
+          ? data.antigravitySelectionStrategy
+          : undefined) ??
+        (typeof data.antigravityAccountSelectionStrategy === "string"
+          ? data.antigravityAccountSelectionStrategy
+          : undefined);
+      const normalized = normalizeStrategy(agRaw);
+      if (normalized) return normalized;
+    }
     const raw =
       (typeof data.selectionStrategy === "string"
         ? data.selectionStrategy
@@ -75,7 +87,7 @@ function readSettingsStrategy(): AccountSelectionStrategy | null {
   }
 }
 
-function writeSettingsStrategy(strategy: AccountSelectionStrategy): void {
+function writeSettingsStrategy(strategy: AccountSelectionStrategy, provider?: ProviderKind): void {
   try {
     const p = defaultSettingsPath();
     const dir = path.dirname(p);
@@ -91,7 +103,9 @@ function writeSettingsStrategy(strategy: AccountSelectionStrategy): void {
     } catch {
       prev = {};
     }
-    const next = { ...prev, selectionStrategy: strategy };
+    const next = provider === "antigravity"
+      ? { ...prev, antigravitySelectionStrategy: strategy }
+      : { ...prev, selectionStrategy: strategy };
     const tmp = `${p}.tmp.${process.pid}.${Date.now()}`;
     fs.writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`, {
       encoding: "utf8",
@@ -109,35 +123,66 @@ function writeSettingsStrategy(strategy: AccountSelectionStrategy): void {
 }
 
 /** Current strategy (env > settings > sticky). Cached briefly. */
-export function getSelectionStrategy(): AccountSelectionStrategy {
+export function getSelectionStrategy(provider?: ProviderKind): AccountSelectionStrategy {
   const now = Date.now();
-  if (cached !== undefined && now - cachedAt < CACHE_MS) return cached;
+  if (provider === "antigravity") {
+    const entry = cachedByProvider.antigravity;
+    if (entry && now - entry.at < CACHE_MS) return entry.strategy;
+
+    const fromEnv = normalizeStrategy(
+      process.env.MULTI_AI_ANTIGRAVITY_SELECTION_STRATEGY ??
+        process.env.MULTI_AI_SELECTION_STRATEGY ??
+        process.env.MULTI_AI_ACCOUNT_SELECTION,
+    );
+    const strategy = fromEnv ?? readSettingsStrategy("antigravity") ?? "sticky";
+    cachedByProvider.antigravity = { strategy, at: now };
+    return strategy;
+  }
+
+  if (cachedGlobal !== undefined && now - cachedGlobalAt < CACHE_MS) return cachedGlobal;
 
   const fromEnv = normalizeStrategy(
     process.env.MULTI_AI_SELECTION_STRATEGY ??
       process.env.MULTI_AI_ACCOUNT_SELECTION,
   );
   const strategy = fromEnv ?? readSettingsStrategy() ?? "sticky";
-  cached = strategy;
-  cachedAt = now;
+  cachedGlobal = strategy;
+  cachedGlobalAt = now;
   return strategy;
 }
 
 export function setSelectionStrategy(
   strategy: AccountSelectionStrategy,
   persist = true,
+  provider?: ProviderKind,
 ): void {
-  cached = strategy;
-  cachedAt = Date.now();
+  const now = Date.now();
+  if (provider === "antigravity") {
+    cachedByProvider.antigravity = { strategy, at: now };
+    if (persist) writeSettingsStrategy(strategy, "antigravity");
+    return;
+  }
+  cachedGlobal = strategy;
+  cachedGlobalAt = now;
   if (persist) writeSettingsStrategy(strategy);
 }
 
-/** Cycle sticky → round-robin → lowest-usage → sticky. */
-export function cycleSelectionStrategy(): AccountSelectionStrategy {
-  const cur = getSelectionStrategy();
+/**
+ * Cycle selection strategy.
+ * For Antigravity: toggles between "sticky" and "round-robin".
+ * For other providers: cycles sticky → round-robin → lowest-usage → sticky.
+ */
+export function cycleSelectionStrategy(provider?: ProviderKind): AccountSelectionStrategy {
+  if (provider === "antigravity") {
+    const cur = getSelectionStrategy("antigravity");
+    const next: AccountSelectionStrategy = cur === "round-robin" ? "sticky" : "round-robin";
+    setSelectionStrategy(next, true, "antigravity");
+    return next;
+  }
+  const cur = getSelectionStrategy(provider);
   const i = STRATEGIES.indexOf(cur);
   const next = STRATEGIES[(i + 1) % STRATEGIES.length]!;
-  setSelectionStrategy(next, true);
+  setSelectionStrategy(next, true, provider);
   return next;
 }
 
@@ -155,6 +200,7 @@ export function selectionStrategyLabel(
 }
 
 export function resetSelectionStrategyForTests(): void {
-  cached = undefined;
-  cachedAt = 0;
+  cachedGlobal = undefined;
+  cachedGlobalAt = 0;
+  delete cachedByProvider.antigravity;
 }

@@ -150,6 +150,15 @@ type UsageSnapshot = {
   readonly secondaryWindowMinutes?: number;
   readonly secondaryResetAt?: number;
   readonly activeLimit?: string;
+  readonly projectId?: string;
+  readonly modelQuotas?: Record<
+    string,
+    {
+      displayName?: string;
+      remainingPercent: number;
+      resetAt?: number;
+    }
+  >;
   readonly observedAt?: number;
 };
 
@@ -1186,13 +1195,18 @@ export class AccountManager {
     id: string,
     snap: UsageSnapshot,
   ): Promise<void> {
-    if (provider !== "codex") return;
+    if (provider !== "codex" && provider !== "antigravity") return;
     const observedAt = snap.observedAt ?? Date.now();
     await this.mutateStorage((storage) => {
       const account = storage.accounts.find((candidate) =>
         matchesIdentity(candidate, provider, id),
       );
-      if (!account || account.provider !== "codex") return;
+      if (
+        !account ||
+        (account.provider !== "codex" && account.provider !== "antigravity")
+      ) {
+        return;
+      }
 
       if (snap.planType !== undefined) account.planType = snap.planType;
       if (snap.primaryUsedPercent !== undefined) {
@@ -1213,7 +1227,17 @@ export class AccountManager {
       if (snap.secondaryResetAt !== undefined) {
         account.secondaryResetAt = snap.secondaryResetAt;
       }
-      if (snap.activeLimit !== undefined) account.activeLimit = snap.activeLimit;
+      if (snap.activeLimit !== undefined && account.provider === "codex") {
+        account.activeLimit = snap.activeLimit;
+      }
+      if (account.provider === "antigravity") {
+        if (typeof snap.projectId === "string") {
+          account.projectId = snap.projectId;
+        }
+        if (snap.modelQuotas !== undefined) {
+          account.modelQuotas = snap.modelQuotas;
+        }
+      }
       account.usageObservedAt = observedAt;
 
       const primaryFull =

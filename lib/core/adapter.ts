@@ -105,6 +105,7 @@ export interface ProbeQuotaAccount {
   region?: string;
   oidcRegion?: string;
   profileArn?: string;
+  projectId?: string;
   /**
    * opencode-go only: per-account dashboard credentials (workspace id + auth
    * cookie). When both are set the dashboard probe uses them instead of the

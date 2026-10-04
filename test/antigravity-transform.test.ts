@@ -222,4 +222,115 @@ describe("Antigravity Request Transformer", () => {
     expect(flash1.model).toBe("gemini-3-flash");
     expect(flash1.request.generationConfig?.thinkingConfig?.thinkingBudget).toBe(0);
   });
+
+  it("calibrates Claude Opus and Sonnet thinking budgets for token efficiency", () => {
+    // Opus default without explicit effort is calibrated to 2048 (not 8192)
+    const opusDefault = transformOpenAiToGemini(
+      { model: "claude-opus-4-6-thinking", messages: [{ role: "user", content: "hello" }] },
+      { projectId: "p" },
+    );
+    expect(opusDefault.request.generationConfig?.thinkingConfig?.thinkingBudget).toBe(2048);
+
+    // Sonnet default without explicit effort is calibrated to 1024 (not 4096)
+    const sonnetDefault = transformOpenAiToGemini(
+      { model: "claude-sonnet-4-6", messages: [{ role: "user", content: "hello" }] },
+      { projectId: "p" },
+    );
+    expect(sonnetDefault.request.generationConfig?.thinkingConfig?.thinkingBudget).toBe(1024);
+
+    // Zero thinking (effort === "none") disables thinking completely
+    const opusNone = transformOpenAiToGemini(
+      { model: "claude-opus-4-6-thinking", reasoning_effort: "none", messages: [{ role: "user", content: "hello" }] },
+      { projectId: "p" },
+    );
+    expect(opusNone.request.generationConfig?.thinkingConfig?.thinkingBudget).toBe(0);
+
+    // CamelCase reasoningEffort is recognized
+    const opusLowCamel = transformOpenAiToGemini(
+      { model: "claude-opus-4-6-thinking", reasoningEffort: "low", messages: [{ role: "user", content: "hello" }] },
+      { projectId: "p" },
+    );
+    expect(opusLowCamel.request.generationConfig?.thinkingConfig?.thinkingBudget).toBe(1024);
+
+    // Explicit thinkingConfig object is recognized
+    const opusExplicit = transformOpenAiToGemini(
+      {
+        model: "claude-opus-4-6-thinking",
+        thinkingConfig: { thinkingBudget: 512 },
+        messages: [{ role: "user", content: "hello" }],
+      },
+      { projectId: "p" },
+    );
+    expect(opusExplicit.request.generationConfig?.thinkingConfig?.thinkingBudget).toBe(512);
+
+    // Adaptive tool follow-up step caps thinking budget to 1024 for Opus
+    const opusToolFollowUp = transformOpenAiToGemini(
+      {
+        model: "claude-opus-4-6-thinking",
+        messages: [
+          { role: "user", content: "List dir" },
+          { role: "assistant", content: "Checking" },
+          { role: "tool", name: "list_dir", content: '{"files":[]}' },
+        ],
+      },
+      { projectId: "p" },
+    );
+    expect(opusToolFollowUp.request.generationConfig?.thinkingConfig?.thinkingBudget).toBe(1024);
+
+    // Explicit effort overrides adaptive tool-turn capping
+    const opusToolExplicitHigh = transformOpenAiToGemini(
+      {
+        model: "claude-opus-4-6-thinking",
+        reasoningEffort: "high",
+        messages: [
+          { role: "user", content: "List dir" },
+          { role: "assistant", content: "Checking" },
+          { role: "tool", name: "list_dir", content: '{"files":[]}' },
+        ],
+      },
+      { projectId: "p" },
+    );
+    expect(opusToolExplicitHigh.request.generationConfig?.thinkingConfig?.thinkingBudget).toBe(8192);
+
+    // Disabled thinking via type: disabled
+    const opusTypeDisabled = transformOpenAiToGemini(
+      {
+        model: "claude-opus-4-6-thinking",
+        thinkingConfig: { type: "disabled" },
+        messages: [{ role: "user", content: "hello" }],
+      },
+      { projectId: "p" },
+    );
+    expect(opusTypeDisabled.request.generationConfig?.thinkingConfig?.thinkingBudget).toBe(0);
+
+    // reasoningEffort: off and disabled variants
+    const opusOff = transformOpenAiToGemini(
+      { model: "claude-opus-4-6-thinking", reasoningEffort: "off" },
+      { projectId: "p" },
+    );
+    expect(opusOff.request.generationConfig?.thinkingConfig?.thinkingBudget).toBe(0);
+
+    const opusDisabled = transformOpenAiToGemini(
+      { model: "claude-opus-4-6-thinking", reasoning_effort: "disabled" },
+      { projectId: "p" },
+    );
+    expect(opusDisabled.request.generationConfig?.thinkingConfig?.thinkingBudget).toBe(0);
+
+    // Explicit snake_case thinking_budget
+    const opusSnakeBudget = transformOpenAiToGemini(
+      { model: "claude-opus-4-6-thinking", thinking_budget: 3500 },
+      { projectId: "p" },
+    );
+    expect(opusSnakeBudget.request.generationConfig?.thinkingConfig?.thinkingBudget).toBe(3500);
+
+    // Empty messages array handled safely
+    const emptyMessages = transformOpenAiToGemini(
+      { model: "claude-opus-4-6-thinking", messages: [] },
+      { projectId: "p" },
+    );
+    expect(emptyMessages.request.contents).toEqual([]);
+    expect(emptyMessages.request.generationConfig?.thinkingConfig?.thinkingBudget).toBe(2048);
+  });
 });
+
+

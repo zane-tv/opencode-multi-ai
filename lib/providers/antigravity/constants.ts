@@ -68,14 +68,17 @@ export const ANTIGRAVITY_DEFAULT_MODELS: Record<string, {
   },
   "claude-sonnet-4-6": {
     name: "Claude Sonnet 4.6 (Thinking)",
+    thinkingBudget: 1024,
     description: "Claude Sonnet 4.6 routed via Antigravity Cloud Code pool",
   },
   "claude-opus-4-6-thinking": {
     name: "Claude Opus 4.6 (High Thinking)",
+    thinkingBudget: 2048,
     description: "Claude Opus 4.6 routed via Antigravity Cloud Code pool",
   },
   "gpt-oss-120b-medium": {
     name: "GPT-OSS 120B (Medium Thinking)",
+    thinkingBudget: 2048,
     description: "Open-weights 120B reasoning model routed via Antigravity Cloud Code pool",
   },
 };

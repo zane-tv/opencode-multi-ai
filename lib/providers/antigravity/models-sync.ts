@@ -32,6 +32,7 @@ export function buildAntigravityModels(): Record<string, AntigravityModelEntry> 
         ? {}
         : {
             variants: {
+              none: { reasoningEffort: "none" },
               low: { reasoningEffort: "low" },
               medium: { reasoningEffort: "medium" },
               high: { reasoningEffort: "high" },

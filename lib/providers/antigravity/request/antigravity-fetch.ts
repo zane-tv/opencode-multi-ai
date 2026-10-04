@@ -30,6 +30,7 @@ type ManagerLike = {
   ): Promise<void>;
   markEntitlementBlocked(provider: "antigravity", id: string): Promise<void>;
   markDeadCandidate(provider: "antigravity", id: string): Promise<void>;
+  recordUsage?(provider: "antigravity", id: string, snap: Record<string, unknown>): Promise<void>;
   touchLastUsed(provider: "antigravity", id: string): Promise<void>;
   list(provider: "antigravity"): Array<{ accountId: string }>;
   get(provider: "antigravity", id: string): AccountOf<"antigravity"> | undefined;
@@ -105,7 +106,8 @@ export function createAntigravityFetch(
     const pool = manager.list("antigravity");
     const maxAttempts = Math.max(1, pool.length);
 
-    const effectivePolicy = options?.accountSelectionStrategy ?? getSelectionStrategy();
+    const effectivePolicy =
+      options?.accountSelectionStrategy ?? getSelectionStrategy("antigravity");
     let lastError: Error | null = null;
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
@@ -201,6 +203,10 @@ export function createAntigravityFetch(
             const resetAt =
               parseRetryTime(errorBody, res.headers) ??
               Date.now() + DEFAULT_ANTIGRAVITY_QUOTA_COOLDOWN_MS;
+            await manager.recordUsage?.("antigravity", accountId, {
+              primaryUsedPercent: 100,
+              primaryResetAt: resetAt,
+            });
             await manager.markQuotaExhausted("antigravity", accountId, resetAt);
             logger.info(
               `Antigravity account ${account?.email || accountId} quota exhausted, cooldown until ${new Date(resetAt).toLocaleTimeString()}, rotating to next account`,
